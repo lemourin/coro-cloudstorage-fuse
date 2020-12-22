@@ -1,0 +1,3 @@
+[submodule "contrib/coro-cloudstorage"]
+	path = contrib/coro-cloudstorage
+	url = git@github.com:lemourin/coro-cloudstorage.git
