@@ -3,6 +3,7 @@
 
 #include <coro/cloudstorage/cloud_exception.h>
 #include <coro/cloudstorage/cloud_factory.h>
+#include <coro/cloudstorage/cloud_provider.h>
 #include <coro/cloudstorage/providers/dropbox.h>
 #include <coro/cloudstorage/providers/google_drive.h>
 #include <coro/cloudstorage/providers/mega.h>
@@ -11,6 +12,7 @@
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
 #include <coro/semaphore.h>
+#include <coro/stdx/concepts.h>
 #include <coro/task.h>
 #include <coro/util/event_loop.h>
 #include <coro/util/type_list.h>
@@ -64,6 +66,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   struct GenericItem {
     std::string name;
     bool is_directory;
+    std::optional<int64_t> timestamp;
     std::optional<int64_t> size;
   };
 
@@ -88,6 +91,15 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
           .name = std::visit([](const auto& d) { return d.name; }, item),
           .is_directory =
               std::holds_alternative<typename CloudProvider::Directory>(item),
+          .timestamp = std::visit(
+              [](const auto& d) -> std::optional<int64_t> {
+                if constexpr (HasTimestamp<decltype(d)>) {
+                  return d.timestamp;
+                } else {
+                  return std::nullopt;
+                }
+              },
+              item),
           .size = std::visit(
               [](const auto& d) {
                 if constexpr (std::is_same_v<std::remove_cvref_t<decltype(d)>,

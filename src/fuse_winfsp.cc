@@ -106,7 +106,6 @@ class WinFspContext {
         dispatcher_([this, mountpoint] {
           Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
-          FspFileSystemSetDebugLog(filesystem_.get(), -1);
           return filesystem_.get();
         }()) {
     filesystem_->UserContext = &context_;
@@ -129,6 +128,18 @@ class WinFspContext {
     info->FileAttributes =
         item.is_directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
     info->FileSize = item.size.value_or(UINT64_MAX);
+    info->ChangeTime =
+        item.timestamp ? 10000000ULL * *item.timestamp + 116444736000000000ULL
+                       : 0;
+    info->CreationTime = info->ChangeTime;
+    info->LastAccessTime = info->ChangeTime;
+    info->LastWriteTime = info->ChangeTime;
+    info->IndexNumber = 0;
+    info->HardLinks = 0;
+    info->ReparseTag = 0;
+    info->AllocationSize = item.size ? (*item.size + kAllocationUnit - 1) /
+                                           kAllocationUnit * kAllocationUnit
+                                     : UINT64_MAX;
   }
 
   static NTSTATUS Open(FSP_FILE_SYSTEM* fs, PWSTR filename,
