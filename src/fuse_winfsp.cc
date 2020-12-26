@@ -276,8 +276,6 @@ class WinFspContext {
       return STATUS_END_OF_FILE;
     }
     context->RunOnEventLoop([=]() -> Task<> {
-      std::cerr << "READ " << offset << " " << length << " "
-                << FileSystemContext::GetGenericItem(*file).name << "\n";
       FSP_FSCTL_TRANSACT_RSP response;
       memset(&response, 0, sizeof(response));
       response.Size = sizeof(response);

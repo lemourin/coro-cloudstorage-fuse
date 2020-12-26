@@ -110,7 +110,13 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
   struct FileContext {
     std::optional<std::variant<ItemT<CloudProvider>...>> item;
-    std::optional<Generator<std::string>> pending_read;
+    struct CurrentRead {
+      Generator<std::string> generator;
+      Generator<std::string>::iterator it;
+      std::string chunk;
+      int64_t offset;
+    };
+    mutable std::optional<CurrentRead> current_read;
   };
 
   FileSystemContext();

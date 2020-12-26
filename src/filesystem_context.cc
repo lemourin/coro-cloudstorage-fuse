@@ -187,23 +187,46 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   if (!context.item) {
     throw CloudException("not a file");
   }
-  Generator<std::string> generator = std::visit(
-      [=](const auto& d) {
-        using CloudProviderT =
-            typename std::remove_cvref_t<decltype(d)>::CloudProvider;
-        const auto& item = std::get<typename CloudProviderT::File>(d.item);
-        if (!item.size) {
-          throw CloudException("size unknown");
-        }
-        return d.provider()->GetFileContent(
-            item, http::Range{.start = static_cast<int64_t>(offset),
-                              .end = std::min<int64_t>(
-                                  *item.size - 1,
-                                  static_cast<int64_t>(offset + size - 1))});
-      },
-      *context.item);
-  co_return co_await http::GetBody(std::move(generator));
-}
+  auto generic_item = GetGenericItem(context);
+  if (!generic_item.size) {
+    throw CloudException("size unknown");
+  }
+  size = std::min<int64_t>(size, *generic_item.size - offset);
+  std::cerr << "READ " << offset << " " << size << " " << generic_item.name
+            << "\n";
+  auto current_read = std::exchange(context.current_read, std::nullopt);
+  if (!current_read || current_read->offset != offset) {
+    std::cerr << "STARTING READ " << offset << "\n";
+    using CurrentRead = typename FileContext::CurrentRead;
+    auto generator = std::visit(
+        [=](const auto& d) {
+          using CloudProviderT =
+              typename std::remove_cvref_t<decltype(d)>::CloudProvider;
+          const auto& item = std::get<typename CloudProviderT::File>(d.item);
+          return d.provider()->GetFileContent(item,
+                                              http::Range{.start = offset});
+        },
+        *context.item);
+    auto it = co_await generator.begin();
+    current_read =
+        CurrentRead{.generator = std::move(generator), .it = std::move(it)};
+  } else {
+    std::cerr << "REUSING READ\n";
+  }
+  std::string chunk = std::exchange(current_read->chunk, "");
+  while (static_cast<int64_t>(chunk.size()) < size &&
+         context.current_read->it != std::end(current_read->generator)) {
+    chunk += std::move(*current_read->it);
+    co_await ++current_read->it;
+  }
+  current_read->offset = offset + size;
+  if (static_cast<int64_t>(chunk.size()) > size) {
+    current_read->chunk = std::string(chunk.begin() + size, chunk.end());
+    chunk.resize(size);
+  }
+  context.current_read = std::move(current_read);
+  co_return std::move(chunk);
+}  // namespace coro::cloudstorage::internal
 
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
