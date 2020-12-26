@@ -108,7 +108,10 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   using ItemT = Item<
       typename CloudProviderAccount::template CloudProviderT<CloudProvider>>;
 
-  using FileContext = std::optional<std::variant<ItemT<CloudProvider>...>>;
+  struct FileContext {
+    std::optional<std::variant<ItemT<CloudProvider>...>> item;
+    std::optional<Generator<std::string>> pending_read;
+  };
 
   FileSystemContext();
   ~FileSystemContext();
@@ -148,9 +151,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
   static GenericItem GetGenericItem(const FileContext& ctx);
   Task<FileContext> GetFileContext(std::string path) const;
-  Generator<std::vector<FileContext>> ReadDirectory(FileContext context) const;
+  Generator<std::vector<FileContext>> ReadDirectory(
+      const FileContext& context) const;
   Task<VolumeData> GetVolumeData() const;
-  Task<std::string> Read(FileContext, int64_t offset, int64_t size) const;
+  Task<std::string> Read(const FileContext&, int64_t offset,
+                         int64_t size) const;
 
  private:
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;

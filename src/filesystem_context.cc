@@ -76,10 +76,11 @@ FileSystemContext<TypeList<T...>>::~FileSystemContext() {
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetGenericItem(const FileContext& ctx)
     -> GenericItem {
-  if (!ctx) {
+  if (!ctx.item) {
     return GenericItem{.name = "root", .is_directory = true};
   }
-  return std::visit([](const auto& d) { return d.GetGenericItem(); }, *ctx);
+  return std::visit([](const auto& d) { return d.GetGenericItem(); },
+                    *ctx.item);
 }
 
 template <typename... T>
@@ -104,9 +105,9 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
 }
 
 template <typename... T>
-auto FileSystemContext<TypeList<T...>>::ReadDirectory(FileContext context) const
-    -> Generator<std::vector<FileContext>> {
-  if (!context) {
+auto FileSystemContext<TypeList<T...>>::ReadDirectory(
+    const FileContext& context) const -> Generator<std::vector<FileContext>> {
+  if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
       auto root = co_await std::visit(
@@ -144,7 +145,7 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(FileContext context) const
                        co_yield std::move(page);
                      });
       },
-      *context);
+      *context.item);
 
   FOR_CO_AWAIT(std::vector<FileContext> & page_data, generator,
                { co_yield std::move(page_data); });
@@ -181,10 +182,9 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
 }
 
 template <typename... T>
-Task<std::string> FileSystemContext<TypeList<T...>>::Read(FileContext context,
-                                                          int64_t offset,
-                                                          int64_t size) const {
-  if (!context) {
+Task<std::string> FileSystemContext<TypeList<T...>>::Read(
+    const FileContext& context, int64_t offset, int64_t size) const {
+  if (!context.item) {
     throw CloudException("not a file");
   }
   Generator<std::string> generator = std::visit(
@@ -201,7 +201,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(FileContext context,
                                   *item.size - 1,
                                   static_cast<int64_t>(offset + size - 1))});
       },
-      *context);
+      *context.item);
   co_return co_await http::GetBody(std::move(generator));
 }
 

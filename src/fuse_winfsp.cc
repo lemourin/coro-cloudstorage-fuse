@@ -181,9 +181,8 @@ class WinFspContext {
     auto file_context = reinterpret_cast<FileContext*>(file_context_ptr);
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-    context->RunOnEventLoop([=, file_context = *file_context,
-                             bytes_transferred =
-                                 *bytes_transferred]() mutable -> Task<> {
+    context->RunOnEventLoop([=, bytes_transferred =
+                                    *bytes_transferred]() mutable -> Task<> {
       FSP_FSCTL_TRANSACT_RSP response;
       response.Size = sizeof(response);
       response.Kind = FspFsctlTransactQueryDirectoryKind;
@@ -199,7 +198,7 @@ class WinFspContext {
         void* directory_buffer = nullptr;
         std::vector<FileContext> data;
         FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-                     context->ReadDirectory(file_context), {
+                     context->ReadDirectory(*file_context), {
                        for (auto& item : page_data) {
                          data.emplace_back(std::move(item));
                        }
@@ -272,15 +271,13 @@ class WinFspContext {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-    if (!file) {
-      return STATUS_INVALID_PARAMETER;
-    }
     if (static_cast<int64_t>(offset) >=
         FileSystemContext::GetGenericItem(*file).size.value_or(0)) {
       return STATUS_END_OF_FILE;
     }
     context->RunOnEventLoop([=]() -> Task<> {
-      std::cerr << "READ " << offset << " " << length << "\n";
+      std::cerr << "READ " << offset << " " << length << " "
+                << FileSystemContext::GetGenericItem(*file).name << "\n";
       FSP_FSCTL_TRANSACT_RSP response;
       memset(&response, 0, sizeof(response));
       response.Size = sizeof(response);
