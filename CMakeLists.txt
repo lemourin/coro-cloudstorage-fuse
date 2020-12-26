@@ -6,7 +6,8 @@ add_subdirectory(contrib/coro-cloudstorage EXCLUDE_FROM_ALL)
 add_executable(coro-cloudstorage-fuse)
 
 target_sources(coro-cloudstorage-fuse PRIVATE
-    src/main.cc)
+    src/main.cc
+    src/filesystem_context.h)
 
 if(WIN32)
     target_sources(coro-cloudstorage-fuse PRIVATE 
