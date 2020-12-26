@@ -1,17 +1,15 @@
 #include "fuse_winfsp.h"
 
-#include <coro/cloudstorage/providers/dropbox.h>
-#include <coro/cloudstorage/providers/google_drive.h>
-#include <coro/cloudstorage/providers/mega.h>
-#include <coro/cloudstorage/providers/one_drive.h>
+// clang-format off
+#include "filesystem_context.h"
+// clang-format on
+
 #include <winfsp/winfsp.h>
 
 #include <future>
 #include <iostream>
 #include <optional>
 #include <string>
-
-#include "filesystem_context.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -21,11 +19,6 @@ const int kAllocationUnit = 4096;
 
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
-using ::coro::util::TypeList;
-
-using CloudProviders =
-    TypeList<coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
-             coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
 
 std::wstring ToWideString(std::string_view string) {
   int size = MultiByteToWideChar(CP_UTF8, 0, string.data(),
@@ -99,7 +92,6 @@ void Check(NTSTATUS status) {
 
 class WinFspContext {
  public:
-  using FileSystemContext = FileSystemContext<CloudProviders>;
   using FileContext = FileSystemContext::FileContext;
   using GenericItem = FileSystemContext::GenericItem;
 
@@ -296,27 +288,11 @@ class WinFspContext {
       response.Hint = hint;
       response.IoStatus.Information = 0;
       try {
-        Generator<std::string> generator = std::visit(
-            [=](const auto& d) {
-              using CloudProviderT =
-                  typename std::remove_cvref_t<decltype(d)>::CloudProvider;
-              const auto& item =
-                  std::get<typename CloudProviderT::File>(d.item);
-              if (!item.size) {
-                throw CloudException("size unknown");
-              }
-              return d.provider()->GetFileContent(
-                  item,
-                  http::Range{.start = static_cast<int64_t>(offset),
-                              .end = std::min<int64_t>(
-                                  *item.size - 1,
-                                  static_cast<int64_t>(offset + length - 1))});
-            },
-            **file);
-        std::string body = co_await http::GetBody(std::move(generator));
-        memcpy(buffer, body.c_str(), body.size());
+        std::string content = co_await context->Read(
+            *file, static_cast<int64_t>(offset), static_cast<int64_t>(length));
+        memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
-        response.IoStatus.Information = static_cast<uint32_t>(body.size());
+        response.IoStatus.Information = static_cast<uint32_t>(content.size());
         FspFileSystemSendResponse(fs, &response);
       } catch (const CloudException& e) {
         response.IoStatus.Status = ToStatus(e);
