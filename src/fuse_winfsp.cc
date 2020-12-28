@@ -209,11 +209,11 @@ class WinFspContext {
         void* directory_buffer = nullptr;
         std::vector<FileContext> data;
         FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-                     context->ReadDirectory(*file_context), {
-                       for (auto& item : page_data) {
-                         data.emplace_back(std::move(item));
-                       }
-                     });
+                     context->ReadDirectory(*file_context)) {
+          for (auto& item : page_data) {
+            data.emplace_back(std::move(item));
+          }
+        }
         NTSTATUS result;
         if (!FspFileSystemAcquireDirectoryBuffer(&directory_buffer, true,
                                                  &result)) {

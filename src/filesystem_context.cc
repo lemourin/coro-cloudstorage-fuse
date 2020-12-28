@@ -141,22 +141,22 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
       [](const auto& d) -> Generator<std::vector<FileContext>> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(d)>::CloudProvider;
-        FOR_CO_AWAIT(auto& page_data,
-                     d.provider()->ListDirectory(
-                         std::get<typename CloudProviderT::Directory>(d.item)),
-                     {
-                       std::vector<FileContext> page;
-                       for (auto& item : page_data.items) {
-                         page.emplace_back(
-                             Item<CloudProviderT>(d.account, std::move(item)));
-                       }
-                       co_yield std::move(page);
-                     });
+        FOR_CO_AWAIT(
+            auto& page_data,
+            d.provider()->ListDirectory(
+                std::get<typename CloudProviderT::Directory>(d.item))) {
+          std::vector<FileContext> page;
+          for (auto& item : page_data.items) {
+            page.emplace_back(Item<CloudProviderT>(d.account, std::move(item)));
+          }
+          co_yield std::move(page);
+        }
       },
       *context.item);
 
-  FOR_CO_AWAIT(std::vector<FileContext> & page_data, generator,
-               { co_yield std::move(page_data); });
+  FOR_CO_AWAIT(std::vector<FileContext> & page_data, generator) {
+    co_yield std::move(page_data);
+  }
 }
 
 template <typename... T>
