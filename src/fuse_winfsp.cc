@@ -156,7 +156,7 @@ class WinFspContext {
     } catch (const CloudException& e) {
       return ToStatus(e);
     } catch (const std::exception&) {
-      return STATUS_UNHANDLED_EXCEPTION;
+      return STATUS_INVALID_DEVICE_REQUEST;
     }
   }
 
@@ -178,7 +178,7 @@ class WinFspContext {
     } catch (const CloudException& e) {
       return ToStatus(e);
     } catch (const std::exception&) {
-      return STATUS_UNHANDLED_EXCEPTION;
+      return STATUS_INVALID_DEVICE_REQUEST;
     }
   }
 
@@ -253,7 +253,7 @@ class WinFspContext {
         response.IoStatus.Status = ToStatus(e);
         FspFileSystemSendResponse(fs, &response);
       } catch (const std::exception&) {
-        response.IoStatus.Status = STATUS_UNHANDLED_EXCEPTION;
+        response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
         FspFileSystemSendResponse(fs, &response);
       }
     });
@@ -304,7 +304,7 @@ class WinFspContext {
         response.IoStatus.Status = ToStatus(e);
         FspFileSystemSendResponse(fs, &response);
       } catch (const std::exception&) {
-        response.IoStatus.Status = STATUS_UNHANDLED_EXCEPTION;
+        response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
         FspFileSystemSendResponse(fs, &response);
       }
     });
