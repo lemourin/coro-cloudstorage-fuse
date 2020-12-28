@@ -259,12 +259,13 @@ void FileSystemContext<TypeList<T...>>::Main() {
 }
 
 template <typename... T>
-Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_loop) {
+Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
   try {
-    Http http{http::CurlHttp(event_loop)};
-    CloudFactory cloud_factory(EventLoop(event_loop), http);
+    Http http{http::CurlHttp(event_base)};
+    EventLoop event_loop(event_base);
+    CloudFactory cloud_factory(event_loop, http);
     http::HttpServer http_server(
-        event_loop, {.address = "0.0.0.0", .port = 12345},
+        event_base, {.address = "0.0.0.0", .port = 12345},
         AccountManagerHandlerT(
             cloud_factory, AccountListener{this},
             util::AuthTokenManager{.token_file = std::string(kTokenFile)}));
