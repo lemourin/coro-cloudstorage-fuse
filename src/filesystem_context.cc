@@ -227,7 +227,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   }
   std::string chunk = std::exchange(current_read->chunk, "");
   while (static_cast<int64_t>(chunk.size()) < size &&
-         context.current_read->it != std::end(current_read->generator)) {
+         current_read->it != std::end(current_read->generator)) {
     chunk += std::move(*current_read->it);
     co_await ++current_read->it;
   }
