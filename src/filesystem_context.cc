@@ -11,6 +11,14 @@ constexpr std::string_view kTokenFile = "access-token.json";
 
 using ::coro::util::TypeList;
 
+template <typename T>
+concept HasUsageData = requires(T v) {
+  { v.space_used }
+  ->stdx::convertible_to<int64_t>;
+  { v.space_total }
+  ->stdx::convertible_to<int64_t>;
+};
+
 template <typename T, typename C>
 std::vector<T> SplitString(const T& string, C delim) {
   std::vector<T> result;
@@ -166,8 +174,12 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
     auto data = co_await std::visit(
         [&](auto& task) -> Task<VolumeData> {
           auto data = co_await task;
-          co_return VolumeData{.space_used = data.space_used,
-                               .space_total = data.space_total};
+          if constexpr (HasUsageData<decltype(data)>) {
+            co_return VolumeData{.space_used = data.space_used,
+                                 .space_total = data.space_total};
+          } else {
+            co_return VolumeData{.space_used = 0, .space_total = 0};
+          }
         },
         task);
     total.space_used += data.space_used;
