@@ -1,15 +1,13 @@
 #include "fuse_winfsp.h"
 
-// clang-format off
-#include "filesystem_context.h"
-// clang-format on
-
 #include <winfsp/winfsp.h>
 
 #include <future>
 #include <iostream>
 #include <optional>
 #include <string>
+
+#include "filesystem_context.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -351,12 +349,15 @@ class WinFspContext {
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDispatcherDeleter> dispatcher_;
 };
 
+}  // namespace
+
 NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
   try {
-    if (argc != 2) {
+    if (argc > 2) {
       return STATUS_INVALID_PARAMETER;
     }
-    service->UserContext = new WinFspContext(argv[1]);
+    service->UserContext =
+        new WinFspContext(argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
     std::cerr << e.what() << "\n";
@@ -367,17 +368,6 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
 NTSTATUS SvcStop(FSP_SERVICE* service) {
   delete reinterpret_cast<WinFspContext*>(service->UserContext);
   return STATUS_SUCCESS;
-}
-
-}  // namespace
-
-int RunWinFSP() {
-  if (!NT_SUCCESS(FspLoad(nullptr))) {
-    return ERROR_DELAY_LOAD_FAILED;
-  }
-
-  return FspServiceRun(const_cast<wchar_t*>(L"coro-cloudstorage-fuse"),
-                       SvcStart, SvcStop, nullptr);
 }
 
 }  // namespace coro::cloudstorage::fuse

@@ -3,7 +3,11 @@ cmake_minimum_required(VERSION 3.17)
 
 add_subdirectory(contrib/coro-cloudstorage EXCLUDE_FROM_ALL)
 
-add_executable(coro-cloudstorage-fuse)
+if(MSVC)
+    set(OPTIONS WIN32)
+endif()
+
+add_executable(coro-cloudstorage-fuse ${OPTIONS})
 
 target_sources(coro-cloudstorage-fuse PRIVATE
     src/main.cc
@@ -11,7 +15,9 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/filesystem_context.cc)
 
 if(WIN32)
-    target_sources(coro-cloudstorage-fuse PRIVATE 
+    configure_file(src/resources.rc.in resources.rc)
+    target_sources(coro-cloudstorage-fuse PRIVATE
+        resources.rc
         src/fuse_winfsp.h
         src/fuse_winfsp.cc)
 endif()
