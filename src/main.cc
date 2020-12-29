@@ -140,13 +140,19 @@ int main() {
   auto delete_notify_icon_guard =
       AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
-  auto fuse = std::async(std::launch::async, FspServiceLoop, service);
+  auto thread_id = GetCurrentThreadId();
+  auto service_thread = std::async(std::launch::async, [=] {
+    FspServiceLoop(service);
+    auto status = FspServiceGetExitCode(service);
+    PostThreadMessage(thread_id, WM_QUIT, 0, status);
+    return status;
+  });
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
     TranslateMessage(&msg);
     DispatchMessage(&msg);
   }
-  return fuse.get();
+  return service_thread.get();
 
 #endif
   return EXIT_SUCCESS;

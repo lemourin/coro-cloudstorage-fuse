@@ -186,9 +186,10 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     }
   };
 
+  std::promise<void> initialized_;
   coro::Promise<void> quit_;
   std::unique_ptr<event_base, EventBaseDeleter> event_loop_;
-  std::thread thread_;
+  std::future<void> thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
 };
 

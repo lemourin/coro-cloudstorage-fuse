@@ -360,8 +360,11 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
         new WinFspContext(argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
-    std::cerr << e.what() << "\n";
+    FspServiceSetExitCode(service, e.status());
     return e.status();
+  } catch (const std::exception&) {
+    FspServiceSetExitCode(service, STATUS_INVALID_DEVICE_REQUEST);
+    return STATUS_INVALID_DEVICE_REQUEST;
   }
 }
 

@@ -65,7 +65,8 @@ FileSystemContext<TypeList<T...>>::FileSystemContext()
 #endif
         return event_base_new();
       }()),
-      thread_([this] { Main(); }) {
+      thread_(std::async(std::launch::async, [this] { Main(); })) {
+  initialized_.get_future().get();
 }
 
 template <typename... T>
@@ -76,7 +77,7 @@ FileSystemContext<TypeList<T...>>::~FileSystemContext() {
         reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
       },
       this, nullptr);
-  thread_.join();
+  thread_.get();
 }
 
 template <typename... T>
@@ -258,6 +259,7 @@ void FileSystemContext<TypeList<T...>>::Main() {
 
 template <typename... T>
 Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
+  bool initialized = false;
   try {
     Http http{http::CurlHttp(event_base)};
     EventLoop event_loop(event_base);
@@ -265,11 +267,16 @@ Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
     http::HttpServer http_server(
         event_base, {.address = "0.0.0.0", .port = 12345},
         AccountManagerHandlerT(cloud_factory, AccountListener{this}));
+    initialized_.set_value();
+    initialized = true;
     co_await quit_;
     co_await http_server.Quit();
-    co_return;
-  } catch (const std::exception& exception) {
-    std::cerr << "EXCEPTION: " << exception.what() << "\n";
+  } catch (const std::exception& e) {
+    if (!initialized) {
+      initialized_.set_exception(std::current_exception());
+    } else {
+      throw;
+    }
   }
 }
 
