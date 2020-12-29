@@ -75,7 +75,7 @@ FileSystemContext<TypeList<T...>>::~FileSystemContext() {
   event_base_once(
       event_loop_.get(), -1, EV_TIMEOUT,
       [](evutil_socket_t, short, void* d) {
-        reinterpret_cast<FileSystemContext*>(d)->quit_.resume();
+        reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
       },
       this, nullptr);
   thread_.join();

@@ -11,7 +11,7 @@
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
-#include <coro/semaphore.h>
+#include <coro/promise.h>
 #include <coro/stdx/concepts.h>
 #include <coro/task.h>
 #include <coro/util/event_loop.h>
@@ -186,7 +186,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     }
   };
 
-  coro::Semaphore quit_;
+  coro::Promise<void> quit_;
   std::unique_ptr<event_base, EventBaseDeleter> event_loop_;
   std::thread thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
