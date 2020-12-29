@@ -44,12 +44,24 @@ struct WindowData {
 LRESULT WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kIconMessageId) {
     if (lparam == WM_LBUTTONDOWN) {
-      WindowData* data =
-          reinterpret_cast<WindowData*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-      FspServiceStop(data->service);
-      PostQuitMessage(EXIT_SUCCESS);
+      ShellExecute(nullptr, "open", "http://localhost:12345", nullptr, nullptr,
+                   SW_SHOWNORMAL);
     } else if (lparam == WM_RBUTTONDOWN) {
-      OutputDebugString("ICON RIGHTCLICKED\n");
+      if (POINT mouse_position; GetCursorPos(&mouse_position)) {
+        HMENU menu = CreatePopupMenu();
+        AppendMenu(menu, MF_STRING, 1, "Quit");
+        SetForegroundWindow(hwnd);
+        int index = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTBUTTON,
+                                   mouse_position.x, mouse_position.y, 0, hwnd,
+                                   nullptr);
+        PostMessage(hwnd, WM_NULL, 0, 0);
+        if (index == 1) {
+          WindowData* data = reinterpret_cast<WindowData*>(
+              GetWindowLongPtr(hwnd, GWLP_USERDATA));
+          FspServiceStop(data->service);
+          PostQuitMessage(EXIT_SUCCESS);
+        }
+      }
     }
   }
   return DefWindowProc(hwnd, msg, wparam, lparam);
