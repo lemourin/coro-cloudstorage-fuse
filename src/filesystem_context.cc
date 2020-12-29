@@ -7,8 +7,6 @@ namespace coro::cloudstorage::internal {
 
 namespace {
 
-constexpr std::string_view kTokenFile = "access-token.json";
-
 using ::coro::util::TypeList;
 
 template <typename T>
@@ -266,9 +264,7 @@ Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
     CloudFactory cloud_factory(event_loop, http);
     http::HttpServer http_server(
         event_base, {.address = "0.0.0.0", .port = 12345},
-        AccountManagerHandlerT(
-            cloud_factory, AccountListener{this},
-            util::AuthTokenManager{.token_file = std::string(kTokenFile)}));
+        AccountManagerHandlerT(cloud_factory, AccountListener{this}));
     co_await quit_;
     co_await http_server.Quit();
     co_return;
