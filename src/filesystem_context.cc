@@ -271,7 +271,7 @@ Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
     initialized = true;
     co_await quit_;
     co_await http_server.Quit();
-  } catch (const std::exception& e) {
+  } catch (const std::exception&) {
     if (!initialized) {
       initialized_.set_exception(std::current_exception());
     } else {

@@ -5,21 +5,26 @@
 #ifdef WIN32
 #include "fuse_winfsp.h"
 
+#define kAppId "cloudstorage-fuse"
+
 constexpr int kIconResourceId = 1;
 constexpr UINT kIconMessageId = WM_APP + 1;
 
 #endif
 
+template <auto FreeFunc>
+struct Deleter {
+  template <typename T>
+  void operator()(T* d) const {
+    if (d) {
+      FreeFunc(d);
+    }
+  }
+};
+
 template <auto FreeFunc, typename T>
 auto Create(T* d) {
-  struct Deleter {
-    void operator()(T* d) const {
-      if (d) {
-        FreeFunc(d);
-      }
-    }
-  };
-  return std::unique_ptr<T, Deleter>(d);
+  return std::unique_ptr<T, Deleter<FreeFunc>>(d);
 }
 
 template <typename F>
@@ -39,6 +44,7 @@ auto AtScopeExit(F func) {
 
 struct WindowData {
   FSP_SERVICE* service;
+  std::promise<NTSTATUS> initialized;
 };
 
 LRESULT WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -67,6 +73,29 @@ LRESULT WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   return DefWindowProc(hwnd, msg, wparam, lparam);
 }
 
+NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
+  auto window_data = reinterpret_cast<WindowData*>(service->UserContext);
+  NTSTATUS status = coro::cloudstorage::fuse::SvcStart(service, argc, argv);
+  window_data->initialized.set_value(status);
+  return status;
+}
+
+void Check(NTSTATUS status, const char* func) {
+  if (status != STATUS_SUCCESS) {
+    std::stringstream error;
+    error << "Fatal error in " << func << " (0x" << std::hex << status << ").";
+    MessageBox(nullptr, error.str().c_str(), nullptr, MB_OK | MB_ICONERROR);
+    throw std::runtime_error(func);
+  }
+}
+
+template <typename T>
+void Check(const T& p, const char* func) {
+  if (!p) {
+    Check(GetLastError(), func);
+  }
+}
+
 #endif
 
 #ifdef WIN32
@@ -75,85 +104,95 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
 #else
 int main() {
 #endif
+  try {
 #ifdef _WIN32
-  WORD version_requested = MAKEWORD(2, 2);
-  WSADATA wsa_data;
+    WORD version_requested = MAKEWORD(2, 2);
+    WSADATA wsa_data;
 
-  (void)WSAStartup(version_requested, &wsa_data);
+    (void)WSAStartup(version_requested, &wsa_data);
 #endif
 
 #ifdef SIGPIPE
-  signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
 #endif
 
 #ifdef WIN32
-  if (!NT_SUCCESS(FspLoad(nullptr))) {
-    return ERROR_DELAY_LOAD_FAILED;
-  }
+    HANDLE mutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, kAppId);
+    std::unique_ptr<void, Deleter<ReleaseMutex>> mutex_guard;
+    if (!mutex) {
+      if (GetLastError() == ERROR_FILE_NOT_FOUND) {
+        mutex_guard = Create<ReleaseMutex>(CreateMutex(0, 0, kAppId));
+      } else {
+        Check(mutex, "OpenMutex");
+      }
+    } else {
+      NOTIFYICONDATA data = {.cbSize = sizeof(NOTIFYICONDATA),
+                             .hWnd = FindWindow(kAppId, kAppId),
+                             .uFlags = NIF_INFO,
+                             .szInfo = kAppId " already running",
+                             .szInfoTitle = kAppId};
+      Check(Shell_NotifyIcon(NIM_MODIFY, &data), "Shell_NotifyIcon");
+      return STATUS_SUCCESS;
+    }
 
-  FSP_SERVICE* service;
-  if (FspServiceCreate(const_cast<wchar_t*>(L"coro-cloudstorage-fuse"),
-                       coro::cloudstorage::fuse::SvcStart,
-                       coro::cloudstorage::fuse::SvcStop, nullptr,
-                       &service) != STATUS_SUCCESS) {
-    return EXIT_FAILURE;
-  }
-  FspServiceAllowConsoleMode(service);
-  auto service_free_guard = AtScopeExit([=] { FspServiceDelete(service); });
+    Check(FspLoad(nullptr), "FspLoad");
 
-  const char class_name[] = "cloudstorage-fuse";
+    auto service = Create<FspServiceDelete>([] {
+      FSP_SERVICE* service;
+      Check(FspServiceCreate(const_cast<wchar_t*>(L"coro-cloudstorage-fuse"),
+                             SvcStart, coro::cloudstorage::fuse::SvcStop,
+                             nullptr, &service),
+            "FspServiceCreate");
+      FspServiceAllowConsoleMode(service);
+      return service;
+    }());
 
-  WNDCLASS wc = {.lpfnWndProc = WindowProc,
-                 .hInstance = instance,
-                 .lpszClassName = class_name};
-  RegisterClass(&wc);
-  auto unregister_class_guard =
-      AtScopeExit([&] { UnregisterClass(class_name, instance); });
+    WNDCLASS wc = {.lpfnWndProc = WindowProc,
+                   .hInstance = instance,
+                   .lpszClassName = kAppId};
+    RegisterClass(&wc);
+    auto unregister_class_guard =
+        AtScopeExit([&] { UnregisterClass(kAppId, instance); });
 
-  auto hwnd = Create<DestroyWindow>(
-      CreateWindowEx(0, class_name, "cloudstorage-fuse", WS_OVERLAPPEDWINDOW,
-                     CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-                     nullptr, nullptr, instance, nullptr));
-  if (hwnd == nullptr) {
-    return EXIT_FAILURE;
-  }
-  WindowData window_data{.service = service};
-  SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
-                   reinterpret_cast<LONG_PTR>(&window_data));
+    auto hwnd = Create<DestroyWindow>(CreateWindowEx(
+        0, kAppId, kAppId, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+        CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr));
+    Check(hwnd, "CreateWindowEx");
+    WindowData window_data{.service = service.get()};
+    SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
+                     reinterpret_cast<LONG_PTR>(&window_data));
+    service->UserContext = &window_data;
 
-  auto icon =
-      Create<DestroyIcon>(LoadIcon(instance, MAKEINTRESOURCE(kIconResourceId)));
-  if (icon == nullptr) {
-    return EXIT_FAILURE;
-  }
+    auto service_thread =
+        std::async(std::launch::async, FspServiceLoop, service.get());
+    Check(window_data.initialized.get_future().get(), "SvcStart");
 
-  NOTIFYICONDATA data = {.cbSize = sizeof(NOTIFYICONDATA),
-                         .hWnd = hwnd.get(),
-                         .uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE,
-                         .uCallbackMessage = kIconMessageId,
-                         .hIcon = icon.get(),
-                         .szTip = "cloudstorage-fuse"};
+    auto icon = Create<DestroyIcon>(
+        LoadIcon(instance, MAKEINTRESOURCE(kIconResourceId)));
+    Check(icon, "LoadIcon");
 
-  if (!Shell_NotifyIcon(NIM_ADD, &data)) {
-    return EXIT_FAILURE;
-  }
-  auto delete_notify_icon_guard =
-      AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
+    NOTIFYICONDATA data = {
+        .cbSize = sizeof(NOTIFYICONDATA),
+        .hWnd = hwnd.get(),
+        .uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_INFO,
+        .uCallbackMessage = kIconMessageId,
+        .hIcon = icon.get(),
+        .szTip = kAppId,
+        .szInfo = kAppId " started",
+        .szInfoTitle = kAppId};
+    Check(Shell_NotifyIcon(NIM_ADD, &data), "Shell_NotifyIcon");
+    auto delete_notify_icon_guard =
+        AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
-  auto thread_id = GetCurrentThreadId();
-  auto service_thread = std::async(std::launch::async, [=] {
-    FspServiceLoop(service);
-    auto status = FspServiceGetExitCode(service);
-    PostThreadMessage(thread_id, WM_QUIT, 0, status);
-    return status;
-  });
-  MSG msg;
-  while (GetMessage(&msg, nullptr, 0, 0)) {
-    TranslateMessage(&msg);
-    DispatchMessage(&msg);
-  }
-  return service_thread.get();
-
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0)) {
+      TranslateMessage(&msg);
+      DispatchMessage(&msg);
+    }
+    return service_thread.get();
 #endif
-  return EXIT_SUCCESS;
+    return EXIT_SUCCESS;
+  } catch (const std::exception&) {
+    return EXIT_FAILURE;
+  }
 }
