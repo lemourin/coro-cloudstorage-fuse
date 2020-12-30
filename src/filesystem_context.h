@@ -72,25 +72,23 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
   template <typename T>
   struct Item {
-    using CloudProvider = T;
+    using CloudProviderT = T;
 
-    Item(std::weak_ptr<CloudProviderAccount> account,
-         typename CloudProvider::Item item)
+    Item(std::weak_ptr<CloudProviderAccount> account, typename T::Item item)
         : account(std::move(account)), item(std::move(item)) {}
 
-    CloudProvider* provider() const {
+    T* provider() const {
       auto acc = account.lock();
       if (!acc) {
         throw CloudException(CloudException::Type::kNotFound);
       }
-      return &std::get<CloudProvider>(acc->provider);
+      return &std::get<T>(acc->provider);
     }
 
     auto GetGenericItem() const {
       return GenericItem{
           .name = std::visit([](const auto& d) { return d.name; }, item),
-          .is_directory =
-              std::holds_alternative<typename CloudProvider::Directory>(item),
+          .is_directory = std::holds_alternative<typename T::Directory>(item),
           .timestamp = std::visit(
               [](const auto& d) -> std::optional<int64_t> {
                 if constexpr (HasTimestamp<decltype(d)>) {
@@ -103,7 +101,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
           .size = std::visit(
               [](const auto& d) {
                 if constexpr (std::is_same_v<std::remove_cvref_t<decltype(d)>,
-                                             typename CloudProvider::File>) {
+                                             typename T::File>) {
                   return d.size;
                 } else {
                   return std::optional<int64_t>();
@@ -116,9 +114,8 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     typename T::Item item;
   };
 
-  template <typename CloudProvider>
-  using ItemT = Item<
-      typename CloudProviderAccount::template CloudProviderT<CloudProvider>>;
+  template <typename T>
+  using ItemT = Item<typename CloudProviderAccount::template CloudProviderT<T>>;
 
   struct FileContext {
     std::optional<std::variant<ItemT<CloudProvider>...>> item;
@@ -186,6 +183,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     }
   };
 
+  struct GetDirectoryGenerator {
+    template <typename T>
+    Generator<std::vector<FileContext>> operator()(const T&) const;
+  };
+
   std::promise<void> initialized_;
   coro::Promise<void> quit_;
   std::unique_ptr<event_base, EventBaseDeleter> event_loop_;
@@ -193,7 +195,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
 };
 
-extern template FileSystemContext<CloudProviders>;
+extern template class FileSystemContext<CloudProviders>;
 
 }  // namespace internal
 

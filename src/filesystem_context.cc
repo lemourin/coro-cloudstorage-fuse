@@ -61,7 +61,7 @@ FileSystemContext<TypeList<T...>>::FileSystemContext()
 #ifdef WIN32
         evthread_use_windows_threads();
 #else
-        evthread_use_posix_threads();
+        evthread_use_pthreads();
 #endif
         return event_base_new();
       }()),
@@ -102,13 +102,32 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
-  co_return co_await std::visit(
+  FileContext result;
+  result.item = co_await std::visit(
       [=](auto& d) -> Task<std::variant<ItemT<T>...>> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
         co_return Item<CloudProvider>(account,
                                       co_await d.GetItemByPath(provider_path));
       },
       account->provider);
+  co_return std::move(result);
+}
+
+template <typename... T>
+template <typename D>
+auto FileSystemContext<TypeList<T...>>::GetDirectoryGenerator::operator()(
+    const D& d) const -> Generator<std::vector<FileContext>> {
+  using CloudProviderT = typename D::CloudProviderT;
+  FOR_CO_AWAIT(auto& page_data,
+               d.provider()->ListDirectory(
+                   std::get<typename CloudProviderT::Directory>(d.item))) {
+    std::vector<FileContext> page;
+    for (auto& item : page_data.items) {
+      page.emplace_back(FileContext{
+          .item = Item<CloudProviderT>(d.account, std::move(item))});
+    }
+    co_yield std::move(page);
+  }
 }
 
 template <typename... T>
@@ -125,35 +144,22 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
       std::visit([id = account->id](
                      auto& directory) { directory.name = std::move(id); },
                  root);
-      result.emplace_back(std::make_optional(std::visit(
-          [&](auto& provider) -> std::variant<ItemT<T>...> {
-            using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
-            return Item<CloudProviderT>(
-                account, std::get<typename CloudProviderT::Directory>(root));
-          },
-          account->provider)));
+      FileContext file_context;
+      result.emplace_back(FileContext{
+          .item = std::visit(
+              [&](auto& provider) -> std::variant<ItemT<T>...> {
+                using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
+                return Item<CloudProviderT>(
+                    account,
+                    std::get<typename CloudProviderT::Directory>(root));
+              },
+              account->provider)});
     }
     co_yield std::move(result);
     co_return;
   }
-  Generator<std::vector<FileContext>> generator = std::visit(
-      [](const auto& d) -> Generator<std::vector<FileContext>> {
-        using CloudProviderT =
-            typename std::remove_cvref_t<decltype(d)>::CloudProvider;
-        FOR_CO_AWAIT(
-            auto& page_data,
-            d.provider()->ListDirectory(
-                std::get<typename CloudProviderT::Directory>(d.item))) {
-          std::vector<FileContext> page;
-          for (auto& item : page_data.items) {
-            page.emplace_back(Item<CloudProviderT>(d.account, std::move(item)));
-          }
-          co_yield std::move(page);
-        }
-      },
-      *context.item);
-
-  FOR_CO_AWAIT(std::vector<FileContext> & page_data, generator) {
+  FOR_CO_AWAIT(std::vector<FileContext> & page_data,
+               std::visit(GetDirectoryGenerator{}, *context.item)) {
     co_yield std::move(page_data);
   }
 }
@@ -161,18 +167,11 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
     -> Task<VolumeData> {
-  using AnyTask = std::variant<Task<typename T::GeneralData>...>;
-  std::vector<AnyTask> tasks;
+  std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
     tasks.emplace_back(std::visit(
-        [](auto& provider) -> AnyTask { return provider.GetGeneralData(); },
-        account->provider));
-  }
-  VolumeData total = {.space_used = 0, .space_total = 0};
-  for (auto& task : tasks) {
-    auto data = co_await std::visit(
-        [&](auto& task) -> Task<VolumeData> {
-          auto data = co_await task;
+        [](auto& provider) -> Task<VolumeData> {
+          auto data = co_await provider.GetGeneralData();
           if constexpr (HasUsageData<decltype(data)>) {
             co_return VolumeData{.space_used = data.space_used,
                                  .space_total = data.space_total};
@@ -180,7 +179,11 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
             co_return VolumeData{.space_used = 0, .space_total = 0};
           }
         },
-        task);
+        account->provider));
+  }
+  VolumeData total = {.space_used = 0, .space_total = 0};
+  for (auto& d : tasks) {
+    auto data = co_await std::move(d);
     total.space_used += data.space_used;
     if (data.space_total && total.space_total) {
       *total.space_total += *data.space_total;
@@ -212,7 +215,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     auto generator = std::visit(
         [=](const auto& d) {
           using CloudProviderT =
-              typename std::remove_cvref_t<decltype(d)>::CloudProvider;
+              typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
           const auto& item = std::get<typename CloudProviderT::File>(d.item);
           return d.provider()->GetFileContent(item,
                                               http::Range{.start = offset});

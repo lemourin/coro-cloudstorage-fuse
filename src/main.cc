@@ -2,16 +2,6 @@
 #include <future>
 #include <sstream>
 
-#ifdef WIN32
-#include "fuse_winfsp.h"
-
-#define kAppId "cloudstorage-fuse"
-
-constexpr int kIconResourceId = 1;
-constexpr UINT kIconMessageId = WM_APP + 1;
-
-#endif
-
 template <auto FreeFunc>
 struct Deleter {
   template <typename T>
@@ -30,7 +20,7 @@ auto Create(T* d) {
 template <typename F>
 auto AtScopeExit(F func) {
   struct Guard {
-    Guard(F func) : func(std::move(func)) {}
+    explicit Guard(F func) : func(std::move(func)) {}
     ~Guard() { func(); }
     Guard(const Guard&) = delete;
     Guard(Guard&&) = delete;
@@ -41,6 +31,13 @@ auto AtScopeExit(F func) {
 }
 
 #ifdef WIN32
+
+#include "fuse_winfsp.h"
+
+#define kAppId "cloudstorage-fuse"
+
+constexpr int kIconResourceId = 1;
+constexpr UINT kIconMessageId = WM_APP + 1;
 
 struct WindowData {
   FSP_SERVICE* service;
@@ -96,27 +93,13 @@ void Check(const T& p, const char* func) {
   }
 }
 
-#endif
-
-#ifdef WIN32
 INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
                    INT cmd_show) {
-#else
-int main() {
-#endif
   try {
-#ifdef _WIN32
     WORD version_requested = MAKEWORD(2, 2);
     WSADATA wsa_data;
-
     (void)WSAStartup(version_requested, &wsa_data);
-#endif
 
-#ifdef SIGPIPE
-    signal(SIGPIPE, SIG_IGN);
-#endif
-
-#ifdef WIN32
     HANDLE mutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, kAppId);
     std::unique_ptr<void, Deleter<ReleaseMutex>> mutex_guard;
     if (!mutex) {
@@ -190,9 +173,13 @@ int main() {
       DispatchMessage(&msg);
     }
     return service_thread.get();
-#endif
-    return EXIT_SUCCESS;
   } catch (const std::exception&) {
     return EXIT_FAILURE;
   }
 }
+#else
+int main() {
+  signal(SIGPIPE, SIG_IGN);
+  return 0;
+}
+#endif
