@@ -139,15 +139,18 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   template <typename F>
   void RunOnEventLoop(F func) {
     F* data = new F(std::move(func));
-    event_base_once(
-        event_loop_.get(), -1, EV_TIMEOUT,
-        [](evutil_socket_t, short, void* d) {
-          Invoke([func = reinterpret_cast<F*>(d)]() -> Task<> {
-            co_await (*func)();
-            delete func;
-          });
-        },
-        data, nullptr);
+    if (event_base_once(
+            event_loop_.get(), -1, EV_TIMEOUT,
+            [](evutil_socket_t, short, void* d) {
+              Invoke([func = reinterpret_cast<F*>(d)]() -> Task<> {
+                co_await (*func)();
+                delete func;
+              });
+            },
+            data, nullptr) != 0) {
+      delete data;
+      throw std::runtime_error("can't run on event loop");
+    }
   }
 
   template <typename F>
@@ -171,6 +174,8 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   Task<VolumeData> GetVolumeData() const;
   Task<std::string> Read(const FileContext&, int64_t offset,
                          int64_t size) const;
+
+  void Quit();
 
  private:
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;

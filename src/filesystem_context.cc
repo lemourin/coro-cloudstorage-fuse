@@ -71,13 +71,18 @@ FileSystemContext<TypeList<T...>>::FileSystemContext()
 
 template <typename... T>
 FileSystemContext<TypeList<T...>>::~FileSystemContext() {
+  Quit();
+  thread_.get();
+}
+
+template <typename... T>
+void FileSystemContext<TypeList<T...>>::Quit() {
   event_base_once(
       event_loop_.get(), -1, EV_TIMEOUT,
       [](evutil_socket_t, short, void* d) {
         reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
       },
       this, nullptr);
-  thread_.get();
 }
 
 template <typename... T>

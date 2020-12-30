@@ -109,6 +109,8 @@ class WinFspContext {
     filesystem_->UserContext = &context_;
   }
 
+  ~WinFspContext() { context_.Quit(); }
+
  private:
   struct FileSystemDeleter {
     void operator()(FSP_FILE_SYSTEM* filesystem) const {
