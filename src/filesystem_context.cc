@@ -77,12 +77,16 @@ FileSystemContext<TypeList<T...>>::~FileSystemContext() {
 
 template <typename... T>
 void FileSystemContext<TypeList<T...>>::Quit() {
-  event_base_once(
-      event_loop_.get(), -1, EV_TIMEOUT,
-      [](evutil_socket_t, short, void* d) {
-        reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
-      },
-      this, nullptr);
+  std::lock_guard lock{quit_mutex_};
+  if (!quit_called_) {
+    quit_called_ = true;
+    event_base_once(
+        event_loop_.get(), -1, EV_TIMEOUT,
+        [](evutil_socket_t, short, void* d) {
+          reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
+        },
+        this, nullptr);
+  }
 }
 
 template <typename... T>

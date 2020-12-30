@@ -138,6 +138,10 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
   template <typename F>
   void RunOnEventLoop(F func) {
+    std::lock_guard lock{quit_mutex_};
+    if (quit_called_) {
+      throw InterruptedException();
+    }
     F* data = new F(std::move(func));
     if (event_base_once(
             event_loop_.get(), -1, EV_TIMEOUT,
@@ -198,6 +202,8 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   std::unique_ptr<event_base, EventBaseDeleter> event_loop_;
   std::future<void> thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
+  std::mutex quit_mutex_;
+  bool quit_called_;
 };
 
 extern template class FileSystemContext<CloudProviders>;
