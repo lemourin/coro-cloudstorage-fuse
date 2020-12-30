@@ -127,7 +127,7 @@ class WinFspContext {
   static void ToFileInfo(GenericItem item, FSP_FSCTL_FILE_INFO* info) {
     info->FileAttributes =
         item.is_directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-    info->FileSize = item.size.value_or(UINT64_MAX);
+    info->FileSize = item.size.value_or(0);
     info->ChangeTime =
         item.timestamp ? 10000000ULL * *item.timestamp + 116444736000000000ULL
                        : 0;
@@ -139,7 +139,7 @@ class WinFspContext {
     info->ReparseTag = 0;
     info->AllocationSize = item.size ? (*item.size + kAllocationUnit - 1) /
                                            kAllocationUnit * kAllocationUnit
-                                     : UINT64_MAX;
+                                     : 0;
   }
 
   static NTSTATUS Open(FSP_FILE_SYSTEM* fs, PWSTR filename,
