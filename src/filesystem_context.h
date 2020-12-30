@@ -203,7 +203,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   std::future<void> thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
   std::mutex quit_mutex_;
-  bool quit_called_;
+  bool quit_called_ = false;
 };
 
 extern template class FileSystemContext<CloudProviders>;
