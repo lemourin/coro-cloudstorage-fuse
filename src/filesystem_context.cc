@@ -144,7 +144,6 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
       std::visit([id = account->id](
                      auto& directory) { directory.name = std::move(id); },
                  root);
-      FileContext file_context;
       result.emplace_back(FileContext{
           .item = std::visit(
               [&](auto& provider) -> std::variant<ItemT<T>...> {
