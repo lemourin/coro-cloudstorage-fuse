@@ -88,7 +88,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     auto GetGenericItem() const {
       return GenericItem{
           .name = std::visit([](const auto& d) { return d.name; }, item),
-          .is_directory = std::holds_alternative<typename T::Directory>(item),
+          .is_directory = std::visit(
+              [](const auto& d) {
+                return IsDirectory<decltype(d), CloudProviderT>;
+              },
+              item),
           .timestamp = std::visit(
               [](const auto& d) -> std::optional<int64_t> {
                 if constexpr (HasTimestamp<decltype(d)>) {
@@ -99,12 +103,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
               },
               item),
           .size = std::visit(
-              [](const auto& d) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(d)>,
-                                             typename T::File>) {
+              [](const auto& d) -> std::optional<int64_t> {
+                if constexpr (HasSize<decltype(d)>) {
                   return d.size;
                 } else {
-                  return std::optional<int64_t>();
+                  return std::nullopt;
                 }
               },
               item)};

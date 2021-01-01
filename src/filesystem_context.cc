@@ -37,6 +37,18 @@ std::vector<T> SplitString(const T& string, C delim) {
   return result;
 }
 
+template <typename FileContext, typename ItemT, typename Directory>
+Generator<std::vector<FileContext>> GetDirectory(ItemT d, Directory directory) {
+  FOR_CO_AWAIT(auto& page_data,
+               d.provider()->ListDirectory(std::move(directory))) {
+    std::vector<FileContext> page;
+    for (auto& item : page_data.items) {
+      page.emplace_back(FileContext{.item = ItemT(d.account, std::move(item))});
+    }
+    co_yield std::move(page);
+  }
+}
+
 }  // namespace
 
 template <typename... T>
@@ -126,17 +138,16 @@ template <typename... T>
 template <typename D>
 auto FileSystemContext<TypeList<T...>>::GetDirectoryGenerator::operator()(
     const D& d) const -> Generator<std::vector<FileContext>> {
-  using CloudProviderT = typename D::CloudProviderT;
-  FOR_CO_AWAIT(auto& page_data,
-               d.provider()->ListDirectory(
-                   std::get<typename CloudProviderT::Directory>(d.item))) {
-    std::vector<FileContext> page;
-    for (auto& item : page_data.items) {
-      page.emplace_back(FileContext{
-          .item = Item<CloudProviderT>(d.account, std::move(item))});
-    }
-    co_yield std::move(page);
-  }
+  return std::visit(
+      [d](const auto& directory) -> Generator<std::vector<FileContext>> {
+        using CloudProviderT = typename D::CloudProviderT;
+        if constexpr (IsDirectory<decltype(directory), CloudProviderT>) {
+          return GetDirectory<FileContext>(d, directory);
+        } else {
+          throw std::invalid_argument("not a directory");
+        }
+      },
+      d.item);
 }
 
 template <typename... T>
@@ -146,26 +157,21 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
     std::vector<FileContext> result;
     for (auto account : accounts_) {
       auto root = co_await std::visit(
-          [](auto& provider) -> Task<std::variant<typename T::Directory...>> {
-            co_return co_await provider.GetRoot();
+          [&](auto& provider) -> Task<FileContext> {
+            using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
+            FileContext context;
+            auto directory = co_await provider.GetRoot();
+            directory.name = account->id;
+            context.item = Item<CloudProviderT>(account, std::move(directory));
+            co_return context;
           },
           account->provider);
-      std::visit([id = account->id](
-                     auto& directory) { directory.name = std::move(id); },
-                 root);
-      result.emplace_back(FileContext{
-          .item = std::visit(
-              [&](auto& provider) -> std::variant<ItemT<T>...> {
-                using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
-                return Item<CloudProviderT>(
-                    account,
-                    std::get<typename CloudProviderT::Directory>(root));
-              },
-              account->provider)});
+      result.emplace_back(std::move(root));
     }
     co_yield std::move(result);
     co_return;
   }
+
   FOR_CO_AWAIT(std::vector<FileContext> & page_data,
                std::visit(GetDirectoryGenerator{}, *context.item)) {
     co_yield std::move(page_data);
@@ -224,9 +230,16 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
         [=](const auto& d) {
           using CloudProviderT =
               typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
-          const auto& item = std::get<typename CloudProviderT::File>(d.item);
-          return d.provider()->GetFileContent(item,
-                                              http::Range{.start = offset});
+          return std::visit(
+              [&](const auto& item) -> Generator<std::string> {
+                if constexpr (IsFile<decltype(item), CloudProviderT>) {
+                  return d.provider()->GetFileContent(
+                      item, http::Range{.start = offset});
+                } else {
+                  throw std::invalid_argument("not a file");
+                }
+              },
+              d.item);
         },
         *context.item);
     auto it = co_await generator.begin();
@@ -248,7 +261,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   }
   context.current_read = std::move(current_read);
   co_return std::move(chunk);
-}  // namespace coro::cloudstorage::internal
+}
 
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
