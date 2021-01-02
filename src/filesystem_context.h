@@ -94,9 +94,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
               },
               item),
           .timestamp = std::visit(
-              [](const auto& d) -> std::optional<int64_t> {
-                return CloudProviderT::GetTimestamp(d);
-              },
+              [](const auto& d) { return CloudProviderT::GetTimestamp(d); },
               item),
           .size = std::visit(
               [](const auto& d) { return CloudProviderT::GetSize(d); }, item)};
