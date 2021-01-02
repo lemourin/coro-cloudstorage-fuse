@@ -95,22 +95,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
               item),
           .timestamp = std::visit(
               [](const auto& d) -> std::optional<int64_t> {
-                if constexpr (HasTimestamp<decltype(d)>) {
-                  return d.timestamp;
-                } else {
-                  return std::nullopt;
-                }
+                return CloudProviderT::GetTimestamp(d);
               },
               item),
           .size = std::visit(
-              [](const auto& d) -> std::optional<int64_t> {
-                if constexpr (HasSize<decltype(d)>) {
-                  return d.size;
-                } else {
-                  return std::nullopt;
-                }
-              },
-              item)};
+              [](const auto& d) { return CloudProviderT::GetSize(d); }, item)};
     }
 
     std::weak_ptr<CloudProviderAccount> account;
