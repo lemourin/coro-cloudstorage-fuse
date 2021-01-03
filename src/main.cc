@@ -1,5 +1,6 @@
 #include <csignal>
 #include <future>
+#include <iostream>
 #include <sstream>
 
 template <auto FreeFunc>
@@ -39,12 +40,22 @@ auto AtScopeExit(F func) {
 constexpr int kIconResourceId = 1;
 constexpr UINT kIconMessageId = WM_APP + 1;
 
+struct DebugStream : std::streambuf {
+  int_type overflow(int_type c) override {
+    if (c != EOF) {
+      TCHAR buf[] = {static_cast<TCHAR>(c), '\0'};
+      OutputDebugString(buf);
+    }
+    return c;
+  }
+};
+
 struct WindowData {
   FSP_SERVICE* service;
   std::promise<NTSTATUS> initialized;
 };
 
-LRESULT WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kIconMessageId) {
     if (lparam == WM_LBUTTONDOWN) {
       ShellExecute(nullptr, "open", "http://localhost:12345", nullptr, nullptr,
@@ -99,6 +110,9 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
     WORD version_requested = MAKEWORD(2, 2);
     WSADATA wsa_data;
     (void)WSAStartup(version_requested, &wsa_data);
+
+    DebugStream debug_stream;
+    std::cerr.rdbuf(&debug_stream);
 
     HANDLE mutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, kAppId);
     std::unique_ptr<void, Deleter<ReleaseMutex>> mutex_guard;

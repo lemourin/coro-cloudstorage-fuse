@@ -182,8 +182,12 @@ class WinFspContext {
     }
   }
 
-  static VOID Close(FSP_FILE_SYSTEM*, PVOID file_context) {
-    delete reinterpret_cast<FileContext*>(file_context);
+  static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
+    auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
+    context->RunOnEventLoop([context, file_context]() -> Task<> {
+      delete reinterpret_cast<FileContext*>(file_context);
+      co_return;
+    });
   }
 
   static NTSTATUS ReadDirectory(FSP_FILE_SYSTEM* fs, PVOID file_context_ptr,
