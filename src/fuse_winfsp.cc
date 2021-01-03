@@ -199,6 +199,7 @@ class WinFspContext {
     context->RunOnEventLoop([=, bytes_transferred =
                                     *bytes_transferred]() mutable -> Task<> {
       FSP_FSCTL_TRANSACT_RSP response;
+      memset(&response, 0, sizeof(response));
       response.Size = sizeof(response);
       response.Kind = FspFsctlTransactQueryDirectoryKind;
       response.Hint = hint;
@@ -305,9 +306,11 @@ class WinFspContext {
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
         FspFileSystemSendResponse(fs, &response);
       } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         response.IoStatus.Status = ToStatus(e);
         FspFileSystemSendResponse(fs, &response);
-      } catch (const std::exception&) {
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
         FspFileSystemSendResponse(fs, &response);
       }

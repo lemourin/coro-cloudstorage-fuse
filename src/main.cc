@@ -44,7 +44,17 @@ struct DebugStream : std::streambuf {
   int_type overflow(int_type c) override {
     if (c != EOF) {
       TCHAR buf[] = {static_cast<TCHAR>(c), '\0'};
-      OutputDebugString(buf);
+      OutputDebugStringA(buf);
+    }
+    return c;
+  }
+};
+
+struct WideDebugStream : std::wstreambuf {
+  int_type overflow(int_type c) override {
+    if (c != EOF) {
+      WCHAR buf[] = {static_cast<WCHAR>(c), '\0'};
+      OutputDebugStringW(buf);
     }
     return c;
   }
@@ -113,12 +123,14 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
 
     DebugStream debug_stream;
     std::cerr.rdbuf(&debug_stream);
+    WideDebugStream wide_debug_stream;
+    std::wcerr.rdbuf(&wide_debug_stream);
 
     HANDLE mutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, kAppId);
     std::unique_ptr<void, Deleter<ReleaseMutex>> mutex_guard;
     if (!mutex) {
       if (GetLastError() == ERROR_FILE_NOT_FOUND) {
-        mutex_guard = Create<ReleaseMutex>(CreateMutex(0, 0, kAppId));
+        mutex_guard = Create<ReleaseMutex>(CreateMutex(nullptr, 0, kAppId));
       } else {
         Check(mutex, "OpenMutex");
       }

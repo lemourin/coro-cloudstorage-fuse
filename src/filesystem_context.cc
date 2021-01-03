@@ -17,6 +17,32 @@ concept HasUsageData = requires(T v) {
   ->stdx::convertible_to<int64_t>;
 };
 
+template <typename F>
+auto AtScopeExit(F func) {
+  struct Guard {
+    explicit Guard(F func) : func(std::move(func)) {}
+    ~Guard() {
+      if (func) {
+        (*func)();
+      }
+    }
+    Guard(const Guard&) = delete;
+    Guard(Guard&& other) noexcept {
+      func = std::move(other.func);
+      other.func = std::nullopt;
+    }
+    Guard& operator=(const Guard&) = delete;
+    Guard& operator=(Guard&& other) noexcept {
+      func = std::move(other.func);
+      other.func = std::nullopt;
+      return *this;
+    }
+
+    std::optional<F> func;
+  };
+  return Guard(std::move(func));
+}
+
 template <typename T, typename C>
 std::vector<T> SplitString(const T& string, C delim) {
   std::vector<T> result;
@@ -69,7 +95,7 @@ void FileSystemContext<TypeList<T...>>::AccountListener::OnDestroy(
 
 template <typename... T>
 FileSystemContext<TypeList<T...>>::FileSystemContext()
-    : event_loop_([] {
+    : event_base_([] {
 #ifdef WIN32
         evthread_use_windows_threads();
 #else
@@ -77,6 +103,7 @@ FileSystemContext<TypeList<T...>>::FileSystemContext()
 #endif
         return event_base_new();
       }()),
+      event_loop_(event_base_.get()),
       thread_(std::async(std::launch::async, [this] { Main(); })) {
   initialized_.get_future().get();
 }
@@ -93,9 +120,11 @@ void FileSystemContext<TypeList<T...>>::Quit() {
   if (!quit_called_) {
     quit_called_ = true;
     event_base_once(
-        event_loop_.get(), -1, EV_TIMEOUT,
+        event_base_.get(), -1, EV_TIMEOUT,
         [](evutil_socket_t, short, void* d) {
-          reinterpret_cast<FileSystemContext*>(d)->quit_.SetValue();
+          auto context = reinterpret_cast<FileSystemContext*>(d);
+          context->stop_source_.request_stop();
+          context->quit_.SetValue();
         },
         this, nullptr);
   }
@@ -123,7 +152,7 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
-  FileContext result;
+  FileContext result = {};
   result.item = co_await std::visit(
       [=](auto& d) -> Task<std::variant<ItemT<T>...>> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
@@ -159,7 +188,7 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
       auto root = co_await std::visit(
           [&](auto& provider) -> Task<FileContext> {
             using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
-            FileContext context;
+            FileContext context = {};
             auto directory = co_await provider.GetRoot();
             directory.name = account->id;
             context.item = Item<CloudProviderT>(account, std::move(directory));
@@ -212,6 +241,8 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
 template <typename... T>
 Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     const FileContext& context, int64_t offset, int64_t size) const {
+  using QueuedRead = typename FileContext::QueuedRead;
+
   if (!context.item) {
     throw CloudException("not a file");
   }
@@ -220,47 +251,102 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     throw CloudException("size unknown");
   }
   size = std::min<int64_t>(size, *generic_item.size - offset);
-  std::cerr << "READ " << offset << " " << size << " " << generic_item.name
-            << "\n";
-  auto current_read = std::exchange(context.current_read, std::nullopt);
-  if (!current_read || current_read->offset != offset) {
-    std::cerr << "STARTING READ " << offset << "\n";
-    using CurrentRead = typename FileContext::CurrentRead;
-    auto generator = std::visit(
-        [=](const auto& d) {
-          using CloudProviderT =
-              typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
-          return std::visit(
-              [&](const auto& item) -> Generator<std::string> {
-                if constexpr (IsFile<decltype(item), CloudProviderT>) {
-                  return d.provider()->GetFileContent(
-                      item, http::Range{.start = offset});
-                } else {
-                  throw std::invalid_argument("not a file");
-                }
-              },
-              d.item);
-        },
-        *context.item);
-    auto it = co_await generator.begin();
-    current_read =
-        CurrentRead{.generator = std::move(generator), .it = std::move(it)};
-  } else {
-    std::cerr << "REUSING READ\n";
+  //  std::cerr << "READ " << offset << " " << size << " " << generic_item.name
+  //            << " " << &context << "\n";
+  auto& current_read = context.current_read;
+  if (current_read &&
+      (current_read->pending || current_read->current_offset != offset)) {
+    struct AwaiterGuard {
+      void operator()() {
+        context->queued_reads.erase(std::find(context->queued_reads.begin(),
+                                              context->queued_reads.end(),
+                                              queued_read));
+      }
+      const FileContext* context;
+      const QueuedRead* queued_read;
+    };
+    if (!current_read->pending) {
+      co_await event_loop_.Wait(100, stop_source_.get_token());
+    }
+    if (current_read->pending) {
+      QueuedRead queued_read{.offset = offset, .size = size};
+      auto awaiter_guard = AtScopeExit(
+          AwaiterGuard{.context = &context, .queued_read = &queued_read});
+      context.queued_reads.emplace_back(&queued_read);
+      co_await queued_read.awaiter;
+    }
   }
-  std::string chunk = std::exchange(current_read->chunk, "");
-  while (static_cast<int64_t>(chunk.size()) < size &&
-         current_read->it != std::end(current_read->generator)) {
-    chunk += std::move(*current_read->it);
-    co_await ++current_read->it;
+  try {
+    if (!current_read || current_read->current_offset != offset) {
+      std::cerr << "STARTING READ " << generic_item.name << " " << offset
+                << "\n";
+      using CurrentRead = typename FileContext::CurrentRead;
+      auto generator = std::visit(
+          [=](const auto& d) {
+            using CloudProviderT =
+                typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
+            return std::visit(
+                [&](const auto& item) -> Generator<std::string> {
+                  if constexpr (IsFile<decltype(item), CloudProviderT>) {
+                    return d.provider()->GetFileContent(
+                        item, http::Range{.start = offset});
+                  } else {
+                    throw std::invalid_argument("not a file");
+                  }
+                },
+                d.item);
+          },
+          *context.item);
+      current_read = CurrentRead{.generator = std::move(generator),
+                                 .current_offset = offset,
+                                 .pending = true};
+      current_read->it = co_await current_read->generator.begin();
+    } else {
+      current_read->pending = true;
+    }
+    std::string chunk = std::exchange(current_read->chunk, "");
+    while (static_cast<int64_t>(chunk.size()) < size &&
+           *current_read->it != std::end(current_read->generator)) {
+      chunk += std::move(**current_read->it);
+      co_await ++*current_read->it;
+    }
+    current_read->current_offset = offset + size;
+    if (static_cast<int64_t>(chunk.size()) > size) {
+      current_read->chunk = std::string(chunk.begin() + size, chunk.end());
+      chunk.resize(size);
+    }
+    current_read->pending = false;
+
+    bool woken_up_someone = false;
+    for (QueuedRead* read : context.queued_reads) {
+      if (context.current_read->current_offset == read->offset) {
+        read->awaiter.SetValue();
+        woken_up_someone = true;
+        break;
+      }
+    }
+    if (!woken_up_someone && !context.queued_reads.empty()) {
+      (*context.queued_reads.begin())->awaiter.SetValue();
+    }
+
+    co_return std::move(chunk);
+  } catch (const std::exception& e) {
+    current_read->pending = false;
+
+    bool woken_up_someone = false;
+    for (QueuedRead* read : context.queued_reads) {
+      if (current_read->current_offset == read->offset) {
+        read->awaiter.SetException(e);
+        woken_up_someone = true;
+        break;
+      }
+    }
+    if (!woken_up_someone && !context.queued_reads.empty()) {
+      (*context.queued_reads.begin())->awaiter.SetValue();
+    }
+
+    throw;
   }
-  current_read->offset = offset + size;
-  if (static_cast<int64_t>(chunk.size()) > size) {
-    current_read->chunk = std::string(chunk.begin() + size, chunk.end());
-    chunk.resize(size);
-  }
-  context.current_read = std::move(current_read);
-  co_return std::move(chunk);
 }
 
 template <typename... T>
@@ -277,19 +363,18 @@ auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
 
 template <typename... T>
 void FileSystemContext<TypeList<T...>>::Main() {
-  Invoke(CoMain(event_loop_.get()));
-  event_base_dispatch(event_loop_.get());
+  Invoke(CoMain());
+  event_base_dispatch(event_base_.get());
 }
 
 template <typename... T>
-Task<> FileSystemContext<TypeList<T...>>::CoMain(event_base* event_base) {
+Task<> FileSystemContext<TypeList<T...>>::CoMain() {
   bool initialized = false;
   try {
-    Http http{http::CurlHttp(event_base)};
-    EventLoop event_loop(event_base);
-    CloudFactory cloud_factory(event_loop, http);
+    Http http{http::CurlHttp(event_base_.get())};
+    CloudFactory cloud_factory(event_loop_, http);
     http::HttpServer http_server(
-        event_base, {.address = "0.0.0.0", .port = 12345},
+        event_base_.get(), {.address = "0.0.0.0", .port = 12345},
         AccountManagerHandlerT(cloud_factory, AccountListener{this}));
     initialized_.set_value();
     initialized = true;

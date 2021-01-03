@@ -111,11 +111,18 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     std::optional<std::variant<ItemT<CloudProvider>...>> item;
     struct CurrentRead {
       Generator<std::string> generator;
-      Generator<std::string>::iterator it;
+      std::optional<Generator<std::string>::iterator> it;
       std::string chunk;
+      int64_t current_offset;
+      bool pending;
+    };
+    struct QueuedRead {
+      Promise<void> awaiter;
       int64_t offset;
+      int64_t size;
     };
     mutable std::optional<CurrentRead> current_read;
+    mutable std::vector<QueuedRead*> queued_reads;
   };
 
   FileSystemContext();
@@ -134,7 +141,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     }
     F* data = new F(std::move(func));
     if (event_base_once(
-            event_loop_.get(), -1, EV_TIMEOUT,
+            event_base_.get(), -1, EV_TIMEOUT,
             [](evutil_socket_t, short, void* d) {
               Invoke([func = reinterpret_cast<F*>(d)]() -> Task<> {
                 co_await (*func)();
@@ -174,7 +181,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
  private:
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
   void Main();
-  Task<> CoMain(event_base* event_loop);
+  Task<> CoMain();
 
   struct EventBaseDeleter {
     void operator()(event_base* event_loop) const {
@@ -189,7 +196,9 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
   std::promise<void> initialized_;
   coro::Promise<void> quit_;
-  std::unique_ptr<event_base, EventBaseDeleter> event_loop_;
+  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
+  coro::util::EventLoop event_loop_;
+  stdx::stop_source stop_source_;
   std::future<void> thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
   std::mutex quit_mutex_;
