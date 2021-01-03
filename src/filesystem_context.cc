@@ -251,8 +251,6 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     throw CloudException("size unknown");
   }
   size = std::min<int64_t>(size, *generic_item.size - offset);
-  //  std::cerr << "READ " << offset << " " << size << " " << generic_item.name
-  //            << " " << &context << "\n";
   auto& current_read = context.current_read;
   if (current_read &&
       (current_read->pending || current_read->current_offset != offset)) {
