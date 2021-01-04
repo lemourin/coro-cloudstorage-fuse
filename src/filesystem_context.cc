@@ -253,20 +253,27 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   size = std::min<int64_t>(size, *generic_item.size - offset);
   auto& current_read = context.current_read;
   if (current_read &&
-      (current_read->pending || current_read->current_offset != offset)) {
-    struct AwaiterGuard {
-      void operator()() {
-        context->queued_reads.erase(std::find(context->queued_reads.begin(),
-                                              context->queued_reads.end(),
-                                              queued_read));
-      }
-      const FileContext* context;
-      const QueuedRead* queued_read;
-    };
+      (current_read->pending || offset > current_read->current_offset)) {
     if (!current_read->pending) {
-      co_await event_loop_.Wait(100, stop_source_.get_token());
+      if (offset - current_read->current_offset <= 4 * size) {
+        const int max_wait = 128;
+        int current_delay = 0;
+        while (!current_read->pending && current_delay < max_wait) {
+          co_await event_loop_.Wait(current_delay, stop_source_.get_token());
+          current_delay = current_delay * 2 + 1;
+        }
+      }
     }
     if (current_read->pending) {
+      struct AwaiterGuard {
+        void operator()() {
+          context->queued_reads.erase(std::find(context->queued_reads.begin(),
+                                                context->queued_reads.end(),
+                                                queued_read));
+        }
+        const FileContext* context;
+        const QueuedRead* queued_read;
+      };
       QueuedRead queued_read{.offset = offset, .size = size};
       auto awaiter_guard = AtScopeExit(
           AwaiterGuard{.context = &context, .queued_read = &queued_read});
