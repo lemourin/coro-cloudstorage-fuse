@@ -204,8 +204,12 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
   }
 }
 #else
-int main() {
+
+#include "fuse_posix.h"
+
+int main(int argc, char** argv) {
   signal(SIGPIPE, SIG_IGN);
-  return 0;
+
+  return coro::cloudstorage::fuse::Run(argc, argv);
 }
 #endif

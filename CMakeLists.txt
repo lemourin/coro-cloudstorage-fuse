@@ -37,7 +37,14 @@ if(WIN32)
 
     set_target_properties(coro-cloudstorage-fuse PROPERTIES LINK_FLAGS "/DELAYLOAD:winfsp-${ARCH}.dll delayimp.lib" )
 else()
-    target_link_libraries(coro-cloudstorage-fuse PRIVATE event_pthreads)
+    target_sources(coro-cloudstorage-fuse PRIVATE
+        src/fuse_posix.cc
+        src/fuse_posix.h)
+
+    include(FindPkgConfig)
+
+    pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse3)
+    target_link_libraries(coro-cloudstorage-fuse PRIVATE event_pthreads PkgConfig::fuse)
 endif()
 
 if(MSVC)
