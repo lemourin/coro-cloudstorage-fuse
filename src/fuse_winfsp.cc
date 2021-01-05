@@ -1,5 +1,6 @@
 #include "fuse_winfsp.h"
 
+#include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
 #include <future>
@@ -94,22 +95,47 @@ class WinFspContext {
   using GenericItem = FileSystemContext::GenericItem;
 
   WinFspContext(PWSTR mountpoint)
-      : filesystem_([this] {
+      : event_base_([] {
+          evthread_use_windows_threads();
+          return event_base_new();
+        }()),
+        event_loop_(std::async(std::launch::async,
+                               [this] {
+                                 try {
+                                   FileSystemContext context(event_base_.get());
+                                   context_ = &context;
+                                   initialized_.set_value();
+                                   event_base_dispatch(event_base_.get());
+                                 } catch (...) {
+                                   initialized_.set_exception(
+                                       std::current_exception());
+                                 }
+                                 context_ = nullptr;
+                               })),
+        filesystem_([this] {
+          initialized_.get_future().get();
           FSP_FILE_SYSTEM* filesystem;
           Check(FspFileSystemCreate(
               const_cast<PWSTR>(L"" FSP_FSCTL_NET_DEVICE_NAME), &volume_params_,
               &operations_, &filesystem));
+          filesystem->UserContext = context_;
           return filesystem;
         }()),
         dispatcher_([this, mountpoint] {
           Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
           return filesystem_.get();
-        }()) {
-    filesystem_->UserContext = &context_;
-  }
+        }()) {}
 
-  ~WinFspContext() { context_.Quit(); }
+  ~WinFspContext() {
+    context_->RunOnEventLoop(
+        [this]() -> Task<> { co_return context_->Cancel(); });
+    dispatcher_.reset();
+    filesystem_.reset();
+    context_->RunOnEventLoop(
+        [this]() -> Task<> { co_return context_->Quit(); });
+    event_loop_.get();
+  }
 
  private:
   struct FileSystemDeleter {
@@ -321,6 +347,12 @@ class WinFspContext {
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
                       ULONG flags) {}
 
+  struct EventBaseDeleter {
+    void operator()(event_base* event_base) const {
+      event_base_free(event_base);
+    }
+  };
+
   FSP_FSCTL_VOLUME_PARAMS volume_params_ = {.SectorSize = kAllocationUnit,
                                             .SectorsPerAllocationUnit = 1,
                                             .MaxComponentLength = MAX_PATH,
@@ -353,7 +385,10 @@ class WinFspContext {
                                            .SetSecurity = nullptr,
                                            .ReadDirectory = ReadDirectory};
 
-  FileSystemContext context_;
+  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
+  std::promise<void> initialized_;
+  FileSystemContext* context_ = nullptr;
+  std::future<void> event_loop_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDeleter> filesystem_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDispatcherDeleter> dispatcher_;
 };

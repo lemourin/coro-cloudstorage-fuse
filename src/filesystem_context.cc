@@ -64,9 +64,11 @@ std::vector<T> SplitString(const T& string, C delim) {
 }
 
 template <typename FileContext, typename ItemT, typename Directory>
-Generator<std::vector<FileContext>> GetDirectory(ItemT d, Directory directory) {
+Generator<std::vector<FileContext>> GetDirectory(ItemT d, Directory directory,
+                                                 stdx::stop_token stop_token) {
   FOR_CO_AWAIT(auto& page_data,
-               d.provider()->ListDirectory(std::move(directory))) {
+               d.provider()->ListDirectory(std::move(directory),
+                                           std::move(stop_token))) {
     std::vector<FileContext> page;
     for (auto& item : page_data.items) {
       page.emplace_back(FileContext{.item = ItemT(d.account, std::move(item))});
@@ -94,39 +96,29 @@ void FileSystemContext<TypeList<T...>>::AccountListener::OnDestroy(
 }
 
 template <typename... T>
-FileSystemContext<TypeList<T...>>::FileSystemContext()
-    : event_base_([] {
-#ifdef WIN32
-        evthread_use_windows_threads();
-#else
-        evthread_use_pthreads();
-#endif
-        return event_base_new();
-      }()),
-      event_loop_(event_base_.get()),
-      thread_(std::async(std::launch::async, [this] { Main(); })) {
-  initialized_.get_future().get();
+FileSystemContext<TypeList<T...>>::FileSystemContext(event_base* event_base)
+    : event_base_(event_base), event_loop_(event_base_) {
+  Invoke(Main());
 }
 
 template <typename... T>
 FileSystemContext<TypeList<T...>>::~FileSystemContext() {
-  Quit();
-  thread_.get();
+  if (stop_source_.get_token().stop_possible()) {
+    Quit();
+  }
+}
+
+template <typename... T>
+void FileSystemContext<TypeList<T...>>::Cancel() {
+  stop_source_.request_stop();
 }
 
 template <typename... T>
 void FileSystemContext<TypeList<T...>>::Quit() {
-  std::lock_guard lock{quit_mutex_};
   if (!quit_called_) {
     quit_called_ = true;
-    event_base_once(
-        event_base_.get(), -1, EV_TIMEOUT,
-        [](evutil_socket_t, short, void* d) {
-          auto context = reinterpret_cast<FileSystemContext*>(d);
-          context->stop_source_.request_stop();
-          context->quit_.SetValue();
-        },
-        this, nullptr);
+    Cancel();
+    quit_.SetValue();
   }
 }
 
@@ -154,10 +146,11 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
   }
   FileContext result = {};
   result.item = co_await std::visit(
-      [=](auto& d) -> Task<std::variant<ItemT<T>...>> {
+      [&](auto& d) -> Task<std::variant<ItemT<T>...>> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
-        co_return Item<CloudProvider>(account,
-                                      co_await d.GetItemByPath(provider_path));
+        co_return Item<CloudProvider>(
+            account,
+            co_await d.GetItemByPath(provider_path, stop_source_.get_token()));
       },
       account->provider);
   co_return std::move(result);
@@ -168,10 +161,11 @@ template <typename D>
 auto FileSystemContext<TypeList<T...>>::GetDirectoryGenerator::operator()(
     const D& d) const -> Generator<std::vector<FileContext>> {
   return std::visit(
-      [d](const auto& directory) -> Generator<std::vector<FileContext>> {
+      [d, stop_token = std::move(stop_token)](
+          const auto& directory) -> Generator<std::vector<FileContext>> {
         using CloudProviderT = typename D::CloudProviderT;
         if constexpr (IsDirectory<decltype(directory), CloudProviderT>) {
-          return GetDirectory<FileContext>(d, directory);
+          return GetDirectory<FileContext>(d, directory, std::move(stop_token));
         } else {
           throw std::invalid_argument("not a directory");
         }
@@ -202,7 +196,8 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
   }
 
   FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-               std::visit(GetDirectoryGenerator{}, *context.item)) {
+               std::visit(GetDirectoryGenerator{stop_source_.get_token()},
+                          *context.item)) {
     co_yield std::move(page_data);
   }
 }
@@ -287,14 +282,15 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                 << "\n";
       using CurrentRead = typename FileContext::CurrentRead;
       auto generator = std::visit(
-          [=](const auto& d) {
+          [&](const auto& d) {
             using CloudProviderT =
                 typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
             return std::visit(
                 [&](const auto& item) -> Generator<std::string> {
                   if constexpr (IsFile<decltype(item), CloudProviderT>) {
                     return d.provider()->GetFileContent(
-                        item, http::Range{.start = offset});
+                        item, http::Range{.start = offset},
+                        stop_source_.get_token());
                   } else {
                     throw std::invalid_argument("not a file");
                   }
@@ -367,31 +363,14 @@ auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
 }
 
 template <typename... T>
-void FileSystemContext<TypeList<T...>>::Main() {
-  Invoke(CoMain());
-  event_base_dispatch(event_base_.get());
-}
-
-template <typename... T>
-Task<> FileSystemContext<TypeList<T...>>::CoMain() {
-  bool initialized = false;
-  try {
-    Http http{http::CurlHttp(event_base_.get())};
-    CloudFactory cloud_factory(event_loop_, http);
-    http::HttpServer http_server(
-        event_base_.get(), {.address = "0.0.0.0", .port = 12345},
-        AccountManagerHandlerT(cloud_factory, AccountListener{this}));
-    initialized_.set_value();
-    initialized = true;
-    co_await quit_;
-    co_await http_server.Quit();
-  } catch (const std::exception&) {
-    if (!initialized) {
-      initialized_.set_exception(std::current_exception());
-    } else {
-      throw;
-    }
-  }
+Task<> FileSystemContext<TypeList<T...>>::Main() {
+  Http http{http::CurlHttp(event_base_)};
+  CloudFactory cloud_factory(event_loop_, http);
+  http::HttpServer http_server(
+      event_base_, {.address = "0.0.0.0", .port = 12345},
+      AccountManagerHandlerT(cloud_factory, AccountListener{this}));
+  co_await quit_;
+  co_await http_server.Quit();
 }
 
 template class FileSystemContext<CloudProviders>;

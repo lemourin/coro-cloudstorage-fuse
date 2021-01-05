@@ -17,10 +17,8 @@
 #include <coro/util/event_loop.h>
 #include <coro/util/type_list.h>
 #include <event.h>
-#include <event2/thread.h>
 
 #include <future>
-#include <thread>
 
 namespace coro::cloudstorage {
 
@@ -125,23 +123,19 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     mutable std::vector<QueuedRead*> queued_reads;
   };
 
-  FileSystemContext();
+  explicit FileSystemContext(event_base*);
   ~FileSystemContext();
 
   FileSystemContext(const FileSystemContext&) = delete;
-  FileSystemContext(FileSystemContext&&) = delete;
-  FileSystemContext& operator()(const FileSystemContext&) = delete;
-  FileSystemContext& operator()(FileSystemContext&&) = delete;
+  FileSystemContext(FileSystemContext&&) = default;
+  FileSystemContext& operator=(const FileSystemContext&) = delete;
+  FileSystemContext& operator=(FileSystemContext&&) = default;
 
   template <typename F>
   void RunOnEventLoop(F func) {
-    std::lock_guard lock{quit_mutex_};
-    if (quit_called_) {
-      throw InterruptedException();
-    }
     F* data = new F(std::move(func));
     if (event_base_once(
-            event_base_.get(), -1, EV_TIMEOUT,
+            event_base_, -1, EV_TIMEOUT,
             [](evutil_socket_t, short, void* d) {
               Invoke([func = reinterpret_cast<F*>(d)]() -> Task<> {
                 co_await (*func)();
@@ -177,31 +171,23 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
                          int64_t size) const;
 
   void Quit();
+  void Cancel();
 
  private:
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
-  void Main();
-  Task<> CoMain();
-
-  struct EventBaseDeleter {
-    void operator()(event_base* event_loop) const {
-      event_base_free(event_loop);
-    }
-  };
+  Task<> Main();
 
   struct GetDirectoryGenerator {
     template <typename T>
     Generator<std::vector<FileContext>> operator()(const T&) const;
+    stdx::stop_token stop_token;
   };
 
-  std::promise<void> initialized_;
   coro::Promise<void> quit_;
-  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
+  event_base* event_base_;
   coro::util::EventLoop event_loop_;
   stdx::stop_source stop_source_;
-  std::future<void> thread_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
-  std::mutex quit_mutex_;
   bool quit_called_ = false;
 };
 
