@@ -62,6 +62,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   };
 
   struct GenericItem {
+    std::string id;
     std::string name;
     bool is_directory;
     std::optional<int64_t> timestamp;
@@ -85,6 +86,9 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
 
     auto GetGenericItem() const {
       return GenericItem{
+          .id = std::visit(
+              [](const auto& d) { return (std::stringstream() << d.id).str(); },
+              item),
           .name = std::visit([](const auto& d) { return d.name; }, item),
           .is_directory = std::visit(
               [](const auto& d) {
