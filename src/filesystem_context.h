@@ -131,9 +131,9 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   ~FileSystemContext();
 
   FileSystemContext(const FileSystemContext&) = delete;
-  FileSystemContext(FileSystemContext&&) = default;
+  FileSystemContext(FileSystemContext&&) = delete;
   FileSystemContext& operator=(const FileSystemContext&) = delete;
-  FileSystemContext& operator=(FileSystemContext&&) = default;
+  FileSystemContext& operator=(FileSystemContext&&) = delete;
 
   template <typename F>
   void RunOnEventLoop(F func) {

@@ -274,8 +274,6 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   }
   auto file_context = reinterpret_cast<FileSystemContext::FileContext*>(fi->fh);
   auto item = FileSystemContext::GetGenericItem(*file_context);
-  std::cerr << "TRYING TO READ " << size << " " << off << " " << item.name
-            << "\n";
   coro::Invoke([req, context, file_context, off, size]() -> Task<> {
     try {
       stdx::stop_source stop_source;
@@ -296,9 +294,30 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 }  // namespace
 
 int Run(int argc, char** argv) {
+  fuse_args args = FUSE_ARGS_INIT(argc, argv);
+  auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
+  fuse_cmdline_opts options;
+  if (fuse_parse_cmdline(&args, &options) != 0) {
+    return -1;
+  }
+  if (!options.mountpoint) {
+    std::cerr << "Mountpoint not specified.\n";
+    return -1;
+  }
+  auto options_guard = AtScopeExit([&] { free(options.mountpoint); });
+  if (options.show_help) {
+    fuse_cmdline_help();
+    fuse_lowlevel_help();
+    return 0;
+  }
   std::unique_ptr<event_base, EventBaseDeleter> event_base(event_base_new());
-  FuseContext context{.context = FileSystemContext(event_base.get())};
-  context.file_context.emplace(FUSE_ROOT_ID, FuseFileContext{});
+  struct CallbackData {
+    event fuse_event;
+    event signal_event;
+    FuseContext* context;
+    fuse_session* session;
+  } cb_data = {};
+  std::unique_ptr<fuse_session, FuseSessionDeleter> session;
   fuse_lowlevel_ops operations = {.init = Init,
                                   .destroy = Destroy,
                                   .lookup = Lookup,
@@ -310,65 +329,68 @@ int Run(int argc, char** argv) {
                                   .opendir = OpenDir,
                                   .readdir = ReadDir,
                                   .releasedir = ReleaseDir};
-  fuse_args args = FUSE_ARGS_INIT(argc, argv);
-  auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
-  std::unique_ptr<fuse_session, FuseSessionDeleter> session(fuse_session_new(
-      &args, &operations, sizeof(fuse_lowlevel_ops), &context));
-  if (!session) {
+  try {
+    FuseContext context{.context = FileSystemContext(event_base.get())};
+    cb_data.context = &context;
+    context.file_context.emplace(FUSE_ROOT_ID, FuseFileContext{});
+    session =
+        std::unique_ptr<fuse_session, FuseSessionDeleter>(fuse_session_new(
+            &args, &operations, sizeof(fuse_lowlevel_ops), &context));
+    if (!session) {
+      throw std::runtime_error("couldn't create fuse_session");
+    }
+    cb_data.session = session.get();
+    Check(fuse_session_mount(session.get(), options.mountpoint));
+    auto unmount_guard =
+        AtScopeExit([&] { fuse_session_unmount(session.get()); });
+
+    int fd = fuse_session_fd(session.get());
+    event_assign(
+        &cb_data.fuse_event, event_base.get(), fd, EV_READ | EV_PERSIST,
+        [](evutil_socket_t fd, short, void* d) {
+          auto data = reinterpret_cast<CallbackData*>(d);
+
+          fuse_buf buffer = {};
+          int size = fuse_session_receive_buf(data->session, &buffer);
+          if (size < 0) {
+            throw std::runtime_error(strerror(-size));
+          }
+          fuse_session_process_buf(data->session, &buffer);
+          free(buffer.mem);
+
+          if (fuse_session_exited(data->session)) {
+            event_del(&data->fuse_event);
+            event_del(&data->signal_event);
+            data->context->context.Quit();
+            return;
+          }
+        },
+        &cb_data);
+    event_add(&cb_data.fuse_event, nullptr);
+
+    event_assign(
+        &cb_data.signal_event, event_base.get(), SIGINT, EV_SIGNAL,
+        [](evutil_socket_t fd, short, void* d) {
+          auto data = reinterpret_cast<CallbackData*>(d);
+          if (!fuse_session_exited(data->session)) {
+            fuse_session_exit(data->session);
+            event_del(&data->fuse_event);
+            event_del(&data->signal_event);
+            data->context->context.Quit();
+          }
+        },
+        &cb_data);
+    event_add(&cb_data.signal_event, nullptr);
+    event_base_dispatch(event_base.get());
+    return 0;
+  } catch (const std::exception& e) {
+    std::cerr << "EXCEPTION " << e.what() << "\n";
+    if (cb_data.context) {
+      cb_data.context->context.Quit();
+      event_base_dispatch(event_base.get());
+    }
     return -1;
   }
-  Check(fuse_session_mount(session.get(), "mount"));
-  auto unmount_guard =
-      AtScopeExit([&] { fuse_session_unmount(session.get()); });
-
-  struct CallbackData {
-    event fuse_event;
-    event signal_event;
-    FuseContext* context;
-    fuse_session* session;
-  };
-
-  int fd = fuse_session_fd(session.get());
-  CallbackData cb_data{.context = &context, .session = session.get()};
-  event_assign(
-      &cb_data.fuse_event, event_base.get(), fd, EV_READ | EV_PERSIST,
-      [](evutil_socket_t fd, short, void* d) {
-        auto data = reinterpret_cast<CallbackData*>(d);
-
-        fuse_buf buffer = {};
-        int size = fuse_session_receive_buf(data->session, &buffer);
-        if (size < 0) {
-          throw std::runtime_error(strerror(-size));
-        }
-        fuse_session_process_buf(data->session, &buffer);
-        free(buffer.mem);
-
-        if (fuse_session_exited(data->session)) {
-          event_del(&data->fuse_event);
-          event_del(&data->signal_event);
-          data->context->context.Quit();
-          return;
-        }
-      },
-      &cb_data);
-  event_add(&cb_data.fuse_event, nullptr);
-
-  event_assign(
-      &cb_data.signal_event, event_base.get(), SIGINT, EV_SIGNAL,
-      [](evutil_socket_t fd, short, void* d) {
-        auto data = reinterpret_cast<CallbackData*>(d);
-        if (!fuse_session_exited(data->session)) {
-          fuse_session_exit(data->session);
-          event_del(&data->fuse_event);
-          event_del(&data->signal_event);
-          data->context->context.Quit();
-        }
-      },
-      &cb_data);
-  event_add(&cb_data.signal_event, nullptr);
-
-  event_base_dispatch(event_base.get());
-  return 0;
 }
 
 }  // namespace coro::cloudstorage::fuse

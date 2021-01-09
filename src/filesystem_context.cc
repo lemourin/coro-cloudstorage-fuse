@@ -103,9 +103,7 @@ FileSystemContext<TypeList<T...>>::FileSystemContext(event_base* event_base)
 
 template <typename... T>
 FileSystemContext<TypeList<T...>>::~FileSystemContext() {
-  if (stop_source_.get_token().stop_possible()) {
-    Quit();
-  }
+  Quit();
 }
 
 template <typename... T>
