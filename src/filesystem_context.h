@@ -87,7 +87,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     auto GetGenericItem() const {
       return GenericItem{
           .id = std::visit(
-              [](const auto& d) { return (std::stringstream() << d.id).str(); },
+              [](const auto& d) {
+                std::stringstream sstream;
+                sstream << d.id;
+                return std::move(sstream).str();
+              },
               item),
           .name = std::visit([](const auto& d) { return d.name; }, item),
           .is_directory = std::visit(
