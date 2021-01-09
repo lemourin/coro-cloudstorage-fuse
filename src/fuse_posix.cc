@@ -79,6 +79,10 @@ struct stat ToStat(const FileSystemContext::GenericItem& item) {
   return stat;
 }
 
+void InterruptRequest(fuse_req_t, void* user_data) {
+  reinterpret_cast<stdx::stop_source*>(user_data)->request_stop();
+}
+
 void Init(void* user_data, struct fuse_conn_info* conn) {}
 
 void Destroy(void* user_data) {}
@@ -138,8 +142,11 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
       int current_index = 0;
       std::unordered_map<std::string, int64_t> children;
       auto& file_context = it->second;
+      stdx::stop_source stop_source;
+      fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
       FOR_CO_AWAIT(std::vector<FileContext> & page,
-                   context->context.ReadDirectory(file_context.context)) {
+                   context->context.ReadDirectory(file_context.context,
+                                                  stop_source.get_token())) {
         for (FileContext& entry : page) {
           auto generic_item = FileSystemContext::GetGenericItem(entry);
           struct stat stat = ToStat(generic_item);
@@ -189,8 +196,11 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
       auto& file_context = it->second;
       if (!file_context.children) {
         std::unordered_map<std::string, int64_t> children;
+        stdx::stop_source stop_source;
+        fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
         FOR_CO_AWAIT(std::vector<FileContext> & page,
-                     context->context.ReadDirectory(it->second.context)) {
+                     context->context.ReadDirectory(it->second.context,
+                                                    stop_source.get_token())) {
           for (FileContext& entry : page) {
             auto generic_item = FileSystemContext::GetGenericItem(entry);
             int64_t inode;
@@ -268,7 +278,10 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
             << "\n";
   coro::Invoke([req, context, file_context, off, size]() -> Task<> {
     try {
-      auto data = co_await context->context.Read(*file_context, off, size);
+      stdx::stop_source stop_source;
+      fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+      auto data = co_await context->context.Read(*file_context, off, size,
+                                                 stop_source.get_token());
       fuse_reply_buf(req, data.data(), data.size());
     } catch (const CloudException& e) {
       fuse_reply_err(req, ToPosixError(e));

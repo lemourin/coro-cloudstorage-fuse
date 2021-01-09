@@ -133,8 +133,8 @@ auto FileSystemContext<TypeList<T...>>::GetGenericItem(const FileContext& ctx)
 }
 
 template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
-    -> Task<FileContext> {
+auto FileSystemContext<TypeList<T...>>::GetFileContext(
+    std::string path, stdx::stop_token stop_token) const -> Task<FileContext> {
   auto components = SplitString(path, '/');
   if (components.empty()) {
     co_return FileContext{};
@@ -144,13 +144,17 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(std::string path) const
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
   FileContext result = {};
   result.item = co_await std::visit(
       [&](auto& d) -> Task<std::variant<ItemT<T>...>> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
         co_return Item<CloudProvider>(
             account,
-            co_await d.GetItemByPath(provider_path, stop_source_.get_token()));
+            co_await d.GetItemByPath(provider_path, stop_source.get_token()));
       },
       account->provider);
   co_return std::move(result);
@@ -175,7 +179,12 @@ auto FileSystemContext<TypeList<T...>>::GetDirectoryGenerator::operator()(
 
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::ReadDirectory(
-    const FileContext& context) const -> Generator<std::vector<FileContext>> {
+    const FileContext& context, stdx::stop_token stop_token) const
+    -> Generator<std::vector<FileContext>> {
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
   if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
@@ -183,7 +192,7 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
           [&](auto& provider) -> Task<FileContext> {
             using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
             FileContext context = {};
-            auto directory = co_await provider.GetRoot();
+            auto directory = co_await provider.GetRoot(stop_source.get_token());
             directory.name = account->id;
             context.item = Item<CloudProviderT>(account, std::move(directory));
             co_return context;
@@ -196,20 +205,24 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
   }
 
   FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-               std::visit(GetDirectoryGenerator{stop_source_.get_token()},
+               std::visit(GetDirectoryGenerator{stop_source.get_token()},
                           *context.item)) {
     co_yield std::move(page_data);
   }
 }
 
 template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
-    -> Task<VolumeData> {
+auto FileSystemContext<TypeList<T...>>::GetVolumeData(
+    stdx::stop_token stop_token) const -> Task<VolumeData> {
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
   std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
     tasks.emplace_back(std::visit(
-        [](auto& provider) -> Task<VolumeData> {
-          auto data = co_await provider.GetGeneralData();
+        [&](auto& provider) -> Task<VolumeData> {
+          auto data = co_await provider.GetGeneralData(stop_source.get_token());
           if constexpr (HasUsageData<decltype(data)>) {
             co_return VolumeData{.space_used = data.space_used,
                                  .space_total = data.space_total};
@@ -235,8 +248,14 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData() const
 
 template <typename... T>
 Task<std::string> FileSystemContext<TypeList<T...>>::Read(
-    const FileContext& context, int64_t offset, int64_t size) const {
+    const FileContext& context, int64_t offset, int64_t size,
+    stdx::stop_token stop_token) const {
   using QueuedRead = typename FileContext::QueuedRead;
+
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
 
   if (!context.item) {
     throw CloudException("not a file");
@@ -254,7 +273,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
         const int max_wait = 128;
         int current_delay = 0;
         while (!current_read->pending && current_delay < max_wait) {
-          co_await event_loop_.Wait(current_delay, stop_source_.get_token());
+          co_await event_loop_.Wait(current_delay, stop_source.get_token());
           current_delay = current_delay * 2 + 1;
         }
       }
@@ -290,7 +309,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                   if constexpr (IsFile<decltype(item), CloudProviderT>) {
                     return d.provider()->GetFileContent(
                         item, http::Range{.start = offset},
-                        stop_source_.get_token());
+                        stop_source.get_token());
                   } else {
                     throw std::invalid_argument("not a file");
                   }

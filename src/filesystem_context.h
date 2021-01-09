@@ -167,12 +167,12 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   }
 
   static GenericItem GetGenericItem(const FileContext& ctx);
-  Task<FileContext> GetFileContext(std::string path) const;
-  Generator<std::vector<FileContext>> ReadDirectory(
-      const FileContext& context) const;
-  Task<VolumeData> GetVolumeData() const;
-  Task<std::string> Read(const FileContext&, int64_t offset,
-                         int64_t size) const;
+  Task<FileContext> GetFileContext(std::string path, stdx::stop_token) const;
+  Generator<std::vector<FileContext>> ReadDirectory(const FileContext& context,
+                                                    stdx::stop_token) const;
+  Task<VolumeData> GetVolumeData(stdx::stop_token) const;
+  Task<std::string> Read(const FileContext&, int64_t offset, int64_t size,
+                         stdx::stop_token) const;
 
   void Quit();
   void Cancel();
