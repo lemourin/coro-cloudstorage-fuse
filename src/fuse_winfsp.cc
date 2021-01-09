@@ -174,8 +174,10 @@ class WinFspContext {
     try {
       auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
       std::promise<FileContext> result;
-      FileContext data = context->Do(
-          [=] { return context->GetFileContext(ToUnixPath(filename)); });
+      FileContext data = context->Do([=] {
+        return context->GetFileContext(ToUnixPath(filename),
+                                       stdx::stop_token());
+      });
       ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
       *file_context = new FileContext{std::move(data)};
       return STATUS_SUCCESS;
@@ -191,7 +193,8 @@ class WinFspContext {
     try {
       auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
 
-      auto data = context->Do([context] { return context->GetVolumeData(); });
+      auto data = context->Do(
+          [context] { return context->GetVolumeData(stdx::stop_token()); });
       volume_info->FreeSize =
           data.space_total ? *data.space_total - data.space_used : UINT64_MAX;
       volume_info->TotalSize =
@@ -239,8 +242,9 @@ class WinFspContext {
         FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
         void* directory_buffer = nullptr;
         std::vector<FileContext> data;
-        FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-                     context->ReadDirectory(*file_context)) {
+        FOR_CO_AWAIT(
+            std::vector<FileContext> & page_data,
+            context->ReadDirectory(*file_context, stdx::stop_token())) {
           for (auto& item : page_data) {
             data.emplace_back(std::move(item));
           }
@@ -326,7 +330,8 @@ class WinFspContext {
       response.IoStatus.Information = 0;
       try {
         std::string content = co_await context->Read(
-            *file, static_cast<int64_t>(offset), static_cast<int64_t>(length));
+            *file, static_cast<int64_t>(offset), static_cast<int64_t>(length),
+            stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
