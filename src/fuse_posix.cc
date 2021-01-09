@@ -1,6 +1,7 @@
 #include "fuse_posix.h"
 
 #define FUSE_USE_VERSION 39
+#include <fuse.h>
 #include <fuse_lowlevel.h>
 
 #include <cfloat>
@@ -26,6 +27,7 @@ struct FuseContext {
   std::unordered_map<std::string, int64_t> inode;
   FileSystemContext context;
   int next_inode = FUSE_ROOT_ID + 1;
+  fuse_conn_info_opts* conn_opts;
 };
 
 struct EventBaseDeleter {
@@ -41,6 +43,13 @@ struct FuseSessionDeleter {
     if (fuse_session) {
       fuse_session_destroy(fuse_session);
     }
+  }
+};
+
+struct FreeDeleter {
+  template <typename T>
+  void operator()(T* d) const {
+    free(d);
   }
 };
 
@@ -83,7 +92,10 @@ void InterruptRequest(fuse_req_t, void* user_data) {
   reinterpret_cast<stdx::stop_source*>(user_data)->request_stop();
 }
 
-void Init(void* user_data, struct fuse_conn_info* conn) {}
+void Init(void* user_data, struct fuse_conn_info* conn) {
+  auto context = reinterpret_cast<FuseContext*>(user_data);
+  fuse_apply_conn_info_opts(context->conn_opts, conn);
+}
 
 void Destroy(void* user_data) {}
 
@@ -296,19 +308,25 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 int Run(int argc, char** argv) {
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
+  std::unique_ptr<fuse_conn_info_opts, FreeDeleter> conn_opts(
+      fuse_parse_conn_info_opts(&args));
   fuse_cmdline_opts options;
   if (fuse_parse_cmdline(&args, &options) != 0) {
-    return -1;
-  }
-  if (!options.mountpoint) {
-    std::cerr << "Mountpoint not specified.\n";
     return -1;
   }
   auto options_guard = AtScopeExit([&] { free(options.mountpoint); });
   if (options.show_help) {
     fuse_cmdline_help();
-    fuse_lowlevel_help();
+    fuse_lib_help(&args);
     return 0;
+  }
+  if (options.show_version) {
+    fuse_lowlevel_version();
+    return 0;
+  }
+  if (!options.mountpoint) {
+    std::cerr << "Mountpoint not specified.\n";
+    return -1;
   }
   std::unique_ptr<event_base, EventBaseDeleter> event_base(event_base_new());
   struct CallbackData {
@@ -330,7 +348,8 @@ int Run(int argc, char** argv) {
                                   .readdir = ReadDir,
                                   .releasedir = ReleaseDir};
   try {
-    FuseContext context{.context = FileSystemContext(event_base.get())};
+    FuseContext context{.context = FileSystemContext(event_base.get()),
+                        .conn_opts = conn_opts.get()};
     cb_data.context = &context;
     auto context_guard = AtScopeExit([&] {
       context.context.Quit();
