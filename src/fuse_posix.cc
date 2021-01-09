@@ -332,6 +332,10 @@ int Run(int argc, char** argv) {
   try {
     FuseContext context{.context = FileSystemContext(event_base.get())};
     cb_data.context = &context;
+    auto context_guard = AtScopeExit([&] {
+      context.context.Quit();
+      event_base_dispatch(event_base.get());
+    });
     context.file_context.emplace(FUSE_ROOT_ID, FuseFileContext{});
     session =
         std::unique_ptr<fuse_session, FuseSessionDeleter>(fuse_session_new(
@@ -385,10 +389,6 @@ int Run(int argc, char** argv) {
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
-    if (cb_data.context) {
-      cb_data.context->context.Quit();
-      event_base_dispatch(event_base.get());
-    }
     return -1;
   }
 }
