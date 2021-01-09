@@ -332,11 +332,13 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
 
     co_return std::move(chunk);
   } catch (const std::exception& e) {
-    current_read->pending = false;
+    auto current_offset =
+        current_read ? current_read->current_offset : offset + size;
+    current_read = std::nullopt;
 
     bool woken_up_someone = false;
     for (QueuedRead* read : context.queued_reads) {
-      if (current_read->current_offset == read->offset) {
+      if (current_offset == read->offset) {
         read->awaiter.SetException(e);
         woken_up_someone = true;
         break;
