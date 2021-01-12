@@ -185,6 +185,8 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   Task<VolumeData> GetVolumeData(stdx::stop_token) const;
   Task<std::string> Read(const FileContext&, int64_t offset, int64_t size,
                          stdx::stop_token) const;
+  Task<FileContext> Rename(const FileContext& item, std::string_view new_name,
+                           stdx::stop_token) const;
 
   void Quit();
   void Cancel();

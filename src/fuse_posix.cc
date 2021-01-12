@@ -123,6 +123,19 @@ fuse_ino_t CreateNode(FuseContext* context, FileContext file_context) {
   }
 }
 
+Task<FileContext> FindFile(FuseContext* context, const FileContext& parent,
+                           std::string_view name, stdx::stop_token stop_token) {
+  FOR_CO_AWAIT(std::vector<FileContext> & page,
+               context->context.ReadDirectory(parent, std::move(stop_token))) {
+    for (FileContext& file_context : page) {
+      if (name == FileSystemContext::GetGenericItem(file_context).name) {
+        co_return std::move(file_context);
+      }
+    }
+  }
+  throw CloudException(CloudException::Type::kNotFound);
+}
+
 struct stat ToStat(const FileSystemContext::GenericItem& item) {
   struct stat stat = {};
   stat.st_mode = (item.is_directory ? S_IFDIR : S_IFREG) | 0644;
@@ -211,7 +224,10 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
       auto page = co_await context->context.ReadDirectoryPage(
           file_context.context,
-          file_context.page_token[read_dir_token.page_index],
+          read_dir_token.page_index == 0
+              ? std::nullopt
+              : std::make_optional(
+                    file_context.page_token[read_dir_token.page_index]),
           stop_source.get_token());
       for (int i = read_dir_token.offset; i < page.items.size(); i++) {
         FileContext& entry = page.items[i];
@@ -272,26 +288,18 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
       auto& file_context = it->second;
       stdx::stop_source stop_source;
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-      FOR_CO_AWAIT(std::vector<FileContext> & page,
-                   context->context.ReadDirectory(it->second.context,
-                                                  stop_source.get_token())) {
-        for (FileContext& entry : page) {
-          auto item = FileSystemContext::GetGenericItem(entry);
-          if (item.name == name) {
-            fuse_entry_param fuse_entry = {};
-            fuse_entry.attr = ToStat(item);
-            fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
-            context->file_context[fuse_entry.attr.st_ino].refcount++;
-            fuse_entry.attr_timeout = kMetadataTimeout;
-            fuse_entry.entry_timeout = kMetadataTimeout;
-            fuse_entry.generation = 1;
-            fuse_entry.ino = fuse_entry.attr.st_ino;
-            fuse_reply_entry(req, &fuse_entry);
-            co_return;
-          }
-        }
-      }
-      fuse_reply_err(req, ENOENT);
+      auto entry = co_await FindFile(context, file_context.context, name,
+                                     stop_source.get_token());
+      auto item = FileSystemContext::GetGenericItem(entry);
+      fuse_entry_param fuse_entry = {};
+      fuse_entry.attr = ToStat(item);
+      fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+      context->file_context[fuse_entry.attr.st_ino].refcount++;
+      fuse_entry.attr_timeout = kMetadataTimeout;
+      fuse_entry.entry_timeout = kMetadataTimeout;
+      fuse_entry.generation = 1;
+      fuse_entry.ino = fuse_entry.attr.st_ino;
+      fuse_reply_entry(req, &fuse_entry);
     } catch (const CloudException& e) {
       fuse_reply_err(req, ToPosixError(e));
     } catch (const InterruptedException&) {
@@ -345,6 +353,58 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   });
 }
 
+void Rename(fuse_req_t req, fuse_ino_t parent, const char* name,
+            fuse_ino_t new_parent, const char* new_name, unsigned int flags) {
+  if (parent != new_parent) {
+    fuse_reply_err(req, EIO);
+    return;
+  }
+
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto it_parent = context->file_context.find(parent);
+  if (it_parent == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
+  auto it_new_parent = context->file_context.find(new_parent);
+  if (it_new_parent == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
+
+  coro::Invoke([&parent = it_parent->second,
+                &new_parent = it_new_parent->second, req, context,
+                name = std::string(name),
+                new_name = std::string(new_name)]() -> Task<> {
+    try {
+      stdx::stop_source stop_source;
+      fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+      auto item = co_await FindFile(context, parent.context, name,
+                                    stop_source.get_token());
+      std::string previous_id = FileSystemContext::GetGenericItem(item).id;
+      auto new_item = co_await context->context.Rename(item, new_name,
+                                                       stop_source.get_token());
+      if (auto it = context->inode.find(previous_id);
+          it != std::end(context->inode)) {
+        auto inode = it->second;
+        context->file_context.erase(it->second);
+        context->inode.erase(it);
+        context->inode.emplace(FileSystemContext::GetGenericItem(new_item).id,
+                               inode);
+        context->file_context.emplace(
+            inode, FuseFileContext{.context = std::move(new_item)});
+      }
+      fuse_reply_err(req, 0);
+    } catch (const CloudException& e) {
+      fuse_reply_err(req, ToPosixError(e));
+    } catch (const InterruptedException&) {
+      fuse_reply_err(req, ECANCELED);
+    } catch (const std::exception& e) {
+      fuse_reply_err(req, EIO);
+    }
+  });
+}
+
 }  // namespace
 
 int Run(int argc, char** argv) {
@@ -383,6 +443,7 @@ int Run(int argc, char** argv) {
                                   .lookup = Lookup,
                                   .forget = Forget,
                                   .getattr = GetAttr,
+                                  .rename = Rename,
                                   .open = Open,
                                   .read = Read,
                                   .release = Release,

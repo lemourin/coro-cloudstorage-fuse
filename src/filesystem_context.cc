@@ -148,16 +148,15 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(
   stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
   stdx::stop_callback cb2(stop_source_.get_token(),
                           [&] { stop_source.request_stop(); });
-  FileContext result = {};
-  result.item = co_await std::visit(
-      [&](auto& d) -> Task<std::variant<ItemT<T>...>> {
+  co_return co_await std::visit(
+      [&](auto& d) -> Task<FileContext> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
-        co_return Item<CloudProvider>(
-            account,
-            co_await d.GetItemByPath(provider_path, stop_source.get_token()));
+        co_return FileContext{
+            .item = Item<CloudProvider>(
+                account, co_await d.GetItemByPath(provider_path,
+                                                  stop_source.get_token()))};
       },
       account->provider);
-  co_return std::move(result);
 }
 
 template <typename... T>
@@ -387,6 +386,32 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
 
     throw;
   }
+}
+
+template <typename... T>
+auto FileSystemContext<TypeList<T...>>::Rename(
+    const FileContext& item, std::string_view new_name,
+    stdx::stop_token stop_token) const -> Task<FileContext> {
+  if (!item.item) {
+    throw CloudException("cannot rename root");
+  }
+
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
+
+  co_return co_await std::visit(
+      [new_name, stop_token = stop_source.get_token()](
+          auto& p) mutable -> Task<FileContext> {
+        using CloudProviderT =
+            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
+        auto item = co_await p.provider()->RenameItem(
+            p.item, std::string(new_name), std::move(stop_token));
+        co_return FileContext{
+            .item = Item<CloudProviderT>(p.account, std::move(item))};
+      },
+      *item.item);
 }
 
 template <typename... T>
