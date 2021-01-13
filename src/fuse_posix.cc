@@ -80,6 +80,26 @@ int ToPosixError(const CloudException& e) {
   }
 }
 
+fuse_ino_t CreateNode(FuseContext* context, FileContext file_context) {
+  auto generic_item = FileSystemContext::GetGenericItem(file_context);
+  auto item_id =
+      std::visit(
+          [](const auto& item) {
+            return std::to_string(reinterpret_cast<intptr_t>(item.provider()));
+          },
+          *file_context.item) +
+      '#' + generic_item.id;
+  if (auto it = context->inode.find(item_id); it != std::end(context->inode)) {
+    return it->second;
+  } else {
+    context->inode.emplace(item_id, context->next_inode);
+    context->file_context.emplace(
+        context->next_inode,
+        FuseFileContext{.context = std::move(file_context)});
+    return context->next_inode++;
+  }
+}
+
 struct stat ToStat(const FileSystemContext::GenericItem& item) {
   struct stat stat = {};
   stat.st_mode = (item.is_directory ? S_IFDIR : S_IFREG) | 0644;
@@ -162,15 +182,7 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
         for (FileContext& entry : page) {
           auto generic_item = FileSystemContext::GetGenericItem(entry);
           struct stat stat = ToStat(generic_item);
-          if (auto it = context->inode.find(generic_item.id);
-              it != std::end(context->inode)) {
-            stat.st_ino = it->second;
-          } else {
-            stat.st_ino = context->next_inode++;
-            context->inode.emplace(generic_item.id, stat.st_ino);
-            context->file_context.emplace(
-                stat.st_ino, FuseFileContext{.context = std::move(entry)});
-          }
+          stat.st_ino = CreateNode(context, std::move(entry));
           children.emplace(generic_item.name, stat.st_ino);
           if (current_index >= off) {
             auto entry_size = fuse_add_direntry(
@@ -215,17 +227,8 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
                                                     stop_source.get_token())) {
           for (FileContext& entry : page) {
             auto generic_item = FileSystemContext::GetGenericItem(entry);
-            int64_t inode;
-            if (auto it = context->inode.find(generic_item.id);
-                it != std::end(context->inode)) {
-              inode = it->second;
-            } else {
-              inode = context->next_inode++;
-              context->inode.emplace(generic_item.id, inode);
-              context->file_context.emplace(
-                  inode, FuseFileContext{.context = std::move(entry)});
-            }
-            children.emplace(generic_item.name, inode);
+            children.emplace(generic_item.name,
+                             CreateNode(context, std::move(entry)));
           }
         }
         file_context.children = std::move(children);
