@@ -131,6 +131,11 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     mutable std::vector<QueuedRead*> queued_reads;
   };
 
+  struct PageData {
+    std::vector<FileContext> items;
+    std::optional<std::string> next_page_token;
+  };
+
   explicit FileSystemContext(event_base*);
   ~FileSystemContext();
 
@@ -174,6 +179,9 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   Task<FileContext> GetFileContext(std::string path, stdx::stop_token) const;
   Generator<std::vector<FileContext>> ReadDirectory(const FileContext& context,
                                                     stdx::stop_token) const;
+  Task<PageData> ReadDirectoryPage(const FileContext& context,
+                                   std::optional<std::string> page_token,
+                                   stdx::stop_token) const;
   Task<VolumeData> GetVolumeData(stdx::stop_token) const;
   Task<std::string> Read(const FileContext&, int64_t offset, int64_t size,
                          stdx::stop_token) const;
@@ -185,9 +193,10 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
   Task<> Main();
 
-  struct GetDirectoryGenerator {
+  struct GetDirectoryPage {
     template <typename T>
-    Generator<std::vector<FileContext>> operator()(const T&) const;
+    Task<PageData> operator()(const T&) const;
+    std::optional<std::string> page_token;
     stdx::stop_token stop_token;
   };
 

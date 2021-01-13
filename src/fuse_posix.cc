@@ -16,10 +16,28 @@ namespace {
 
 using FileContext = FileSystemContext::FileContext;
 
+constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
+constexpr int kMetadataTimeout = 10;
+
+struct ReadDirToken {
+  off_t page_index;
+  off_t offset;
+};
+
+ReadDirToken DecodeReadDirToken(off_t d) {
+  return ReadDirToken{.page_index = d >> kIndexWidth,
+                      .offset = d & ((1ll << kIndexWidth) - 1)};
+}
+
+off_t EncodeReadDirToken(ReadDirToken token) {
+  return (token.page_index << kIndexWidth) | token.offset;
+}
+
 struct FuseFileContext {
   FileContext context;
   std::optional<std::unordered_map<std::string, int64_t>> children;
   int64_t refcount;
+  std::vector<std::string> page_token = {""};
 };
 
 struct FuseContext {
@@ -129,7 +147,7 @@ void GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
   struct stat stat =
       ToStat(FileSystemContext::GetGenericItem(it->second.context));
   stat.st_ino = ino;
-  fuse_reply_attr(req, &stat, DBL_MAX);
+  fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
 
 void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
@@ -139,10 +157,10 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     fuse_reply_err(req, ENOENT);
     return;
   }
-  fi->fh = reinterpret_cast<uint64_t>(
-      new FileSystemContext::FileContext{.item = it->second.context.item});
+  fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
+      .context = FileContext{.item = it->second.context.item}});
   if (fuse_reply_open(req, fi) != 0) {
-    delete reinterpret_cast<FileSystemContext::FileContext*>(fi->fh);
+    delete reinterpret_cast<FuseFileContext*>(fi->fh);
   }
 }
 
@@ -151,7 +169,7 @@ void OpenDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
 }
 
 void Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
-  delete reinterpret_cast<FileSystemContext::FileContext*>(fi->fh);
+  delete reinterpret_cast<FuseFileContext*>(fi->fh);
   fuse_reply_err(req, 0);
 }
 
@@ -167,36 +185,62 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     fuse_reply_err(req, ENOENT);
     return;
   }
+  std::cerr << "READ DIR " << ino << " " << off << "\n";
   coro::Invoke([=]() -> Task<> {
     try {
+      auto& file_context = *reinterpret_cast<FuseFileContext*>(fi->fh);
+      if (file_context.page_token.size() > 1 &&
+          file_context.page_token.back().empty()) {
+        fuse_reply_buf(req, nullptr, 0);
+        co_return;
+      }
+      ReadDirToken read_dir_token = DecodeReadDirToken(off);
       std::string buffer(size, 0);
       int offset = 0;
       int current_index = 0;
       std::unordered_map<std::string, int64_t> children;
-      auto& file_context = it->second;
       stdx::stop_source stop_source;
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-      FOR_CO_AWAIT(std::vector<FileContext> & page,
-                   context->context.ReadDirectory(file_context.context,
-                                                  stop_source.get_token())) {
-        for (FileContext& entry : page) {
-          auto generic_item = FileSystemContext::GetGenericItem(entry);
-          struct stat stat = ToStat(generic_item);
-          stat.st_ino = CreateNode(context, std::move(entry));
-          children.emplace(generic_item.name, stat.st_ino);
-          if (current_index >= off) {
-            auto entry_size = fuse_add_direntry(
-                req, nullptr, 0, generic_item.name.c_str(), nullptr, 0);
-            if (offset + entry_size < size) {
-              offset += fuse_add_direntry(
-                  req, buffer.data() + offset, size - offset,
-                  generic_item.name.c_str(), &stat, current_index + 1);
+      auto page = co_await context->context.ReadDirectoryPage(
+          file_context.context,
+          file_context.page_token[read_dir_token.page_index],
+          stop_source.get_token());
+      for (int i = read_dir_token.offset; i < page.items.size(); i++) {
+        FileContext& entry = page.items[i];
+        auto generic_item = FileSystemContext::GetGenericItem(entry);
+        fuse_entry_param fuse_entry = {};
+        fuse_entry.attr = ToStat(generic_item);
+        fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+        fuse_entry.generation = 1;
+        fuse_entry.ino = fuse_entry.attr.st_ino;
+        fuse_entry.attr_timeout = kMetadataTimeout;
+        fuse_entry.entry_timeout = kMetadataTimeout;
+        auto entry_size = fuse_add_direntry_plus(
+            req, nullptr, 0, generic_item.name.c_str(), nullptr, 0);
+        if (offset + entry_size < size) {
+          context->file_context[fuse_entry.ino].refcount++;
+          ReadDirToken next_token;
+          if (i + 1 == page.items.size()) {
+            next_token = {.page_index = read_dir_token.page_index + 1,
+                          .offset = 0};
+            if (read_dir_token.page_index + 1 >=
+                file_context.page_token.size()) {
+              file_context.page_token.emplace_back(
+                  page.next_page_token.value_or(""));
             }
+          } else {
+            next_token = {.page_index = read_dir_token.page_index,
+                          .offset = read_dir_token.offset + 1};
           }
-          current_index++;
+          offset +=
+              fuse_add_direntry_plus(req, buffer.data() + offset, size - offset,
+                                     generic_item.name.c_str(), &fuse_entry,
+                                     EncodeReadDirToken(next_token));
+        } else {
+          break;
         }
+        current_index++;
       }
-      file_context.children = std::move(children);
       fuse_reply_buf(req, buffer.data(), offset);
     } catch (const CloudException& e) {
       fuse_reply_err(req, ToPosixError(e));
@@ -215,10 +259,12 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
     fuse_reply_err(req, ENOENT);
     return;
   }
+  std::cerr << "LOOKING UP " << name << "\n";
   coro::Invoke([context, req, it, name = std::string(name)]() -> Task<> {
     try {
       auto& file_context = it->second;
-      if (!file_context.children) {
+      if (!file_context.children ||
+          file_context.children->find(name) == file_context.children->end()) {
         std::unordered_map<std::string, int64_t> children;
         stdx::stop_source stop_source;
         fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
@@ -248,7 +294,8 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
       fuse_entry_param entry = {};
       entry.attr = ToStat(item);
       entry.attr.st_ino = entry_it->second;
-      entry.entry_timeout = 1.0;
+      entry.attr_timeout = kMetadataTimeout;
+      entry.entry_timeout = kMetadataTimeout;
       entry.generation = 1;
       entry.ino = entry.attr.st_ino;
       file_context_it->second.refcount++;
@@ -287,14 +334,14 @@ void Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     fuse_reply_err(req, ENOENT);
     return;
   }
-  auto file_context = reinterpret_cast<FileSystemContext::FileContext*>(fi->fh);
-  auto item = FileSystemContext::GetGenericItem(*file_context);
+  auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
+  auto item = FileSystemContext::GetGenericItem(file_context->context);
   coro::Invoke([req, context, file_context, off, size]() -> Task<> {
     try {
       stdx::stop_source stop_source;
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-      auto data = co_await context->context.Read(*file_context, off, size,
-                                                 stop_source.get_token());
+      auto data = co_await context->context.Read(file_context->context, off,
+                                                 size, stop_source.get_token());
       fuse_reply_buf(req, data.data(), data.size());
     } catch (const CloudException& e) {
       fuse_reply_err(req, ToPosixError(e));
@@ -348,8 +395,8 @@ int Run(int argc, char** argv) {
                                   .read = Read,
                                   .release = Release,
                                   .opendir = OpenDir,
-                                  .readdir = ReadDir,
-                                  .releasedir = ReleaseDir};
+                                  .releasedir = ReleaseDir,
+                                  .readdirplus = ReadDir};
   try {
     FuseContext context{.context = FileSystemContext(event_base.get()),
                         .conn_opts = conn_opts.get()};

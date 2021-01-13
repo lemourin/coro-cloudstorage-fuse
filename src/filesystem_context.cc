@@ -63,18 +63,20 @@ std::vector<T> SplitString(const T& string, C delim) {
   return result;
 }
 
-template <typename FileContext, typename ItemT, typename Directory>
-Generator<std::vector<FileContext>> GetDirectory(ItemT d, Directory directory,
-                                                 stdx::stop_token stop_token) {
-  FOR_CO_AWAIT(auto& page_data,
-               d.provider()->ListDirectory(std::move(directory),
-                                           std::move(stop_token))) {
-    std::vector<FileContext> page;
-    for (auto& item : page_data.items) {
-      page.emplace_back(FileContext{.item = ItemT(d.account, std::move(item))});
-    }
-    co_yield std::move(page);
+template <typename FileSystemContext, typename ItemT, typename Directory,
+          typename PageData = typename FileSystemContext::PageData,
+          typename FileContext = typename FileSystemContext::FileContext>
+Task<PageData> GetPage(ItemT d, Directory directory,
+                       std::optional<std::string> page_token,
+                       stdx::stop_token stop_token) {
+  auto page_data = co_await d.provider()->ListDirectoryPage(
+      std::move(directory), std::move(page_token), std::move(stop_token));
+  PageData page{.next_page_token = page_data.next_page_token};
+  for (auto& item : page_data.items) {
+    page.items.emplace_back(
+        FileContext{.item = ItemT(d.account, std::move(item))});
   }
+  co_return std::move(page);
 }
 
 }  // namespace
@@ -160,14 +162,16 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(
 
 template <typename... T>
 template <typename D>
-auto FileSystemContext<TypeList<T...>>::GetDirectoryGenerator::operator()(
-    const D& d) const -> Generator<std::vector<FileContext>> {
+auto FileSystemContext<TypeList<T...>>::GetDirectoryPage::operator()(
+    const D& d) const -> Task<PageData> {
   return std::visit(
-      [d, stop_token = std::move(stop_token)](
-          const auto& directory) -> Generator<std::vector<FileContext>> {
+      [d, page_token = std::move(page_token),
+       stop_token =
+           std::move(stop_token)](const auto& directory) -> Task<PageData> {
         using CloudProviderT = typename D::CloudProviderT;
         if constexpr (IsDirectory<decltype(directory), CloudProviderT>) {
-          return GetDirectory<FileContext>(d, directory, std::move(stop_token));
+          return GetPage<FileSystemContext>(d, directory, std::move(page_token),
+                                            std::move(stop_token));
         } else {
           throw std::invalid_argument("not a directory");
         }
@@ -183,6 +187,25 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
   stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
   stdx::stop_callback cb2(stop_source_.get_token(),
                           [&] { stop_source.request_stop(); });
+
+  std::optional<std::string> page_token;
+  do {
+    auto page_data = co_await ReadDirectoryPage(context, std::move(page_token),
+                                                stop_source.get_token());
+    page_token = std::move(page_data.next_page_token);
+    co_yield std::move(page_data.items);
+  } while (page_token);
+}
+
+template <typename... T>
+auto FileSystemContext<TypeList<T...>>::ReadDirectoryPage(
+    const FileContext& context, std::optional<std::string> page_token,
+    stdx::stop_token stop_token) const -> Task<PageData> {
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
+
   if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
@@ -198,15 +221,12 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
           account->provider);
       result.emplace_back(std::move(root));
     }
-    co_yield std::move(result);
-    co_return;
+    co_return PageData{.items = std::move(result)};
   }
 
-  FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-               std::visit(GetDirectoryGenerator{stop_source.get_token()},
-                          *context.item)) {
-    co_yield std::move(page_data);
-  }
+  co_return co_await std::visit(
+      GetDirectoryPage{std::move(page_token), stop_source.get_token()},
+      *context.item);
 }
 
 template <typename... T>
