@@ -35,7 +35,6 @@ off_t EncodeReadDirToken(ReadDirToken token) {
 
 struct FuseFileContext {
   FileContext context;
-  std::optional<std::unordered_map<std::string, int64_t>> children;
   int64_t refcount;
   std::vector<std::string> page_token = {""};
 };
@@ -185,7 +184,6 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     fuse_reply_err(req, ENOENT);
     return;
   }
-  std::cerr << "READ DIR " << ino << " " << off << "\n";
   coro::Invoke([=]() -> Task<> {
     try {
       auto& file_context = *reinterpret_cast<FuseFileContext*>(fi->fh);
@@ -195,6 +193,10 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
         co_return;
       }
       ReadDirToken read_dir_token = DecodeReadDirToken(off);
+      if (read_dir_token.page_index >= file_context.page_token.size()) {
+        fuse_reply_err(req, EINVAL);
+        co_return;
+      }
       std::string buffer(size, 0);
       int offset = 0;
       int current_index = 0;
@@ -259,47 +261,31 @@ void Lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
     fuse_reply_err(req, ENOENT);
     return;
   }
-  std::cerr << "LOOKING UP " << name << "\n";
   coro::Invoke([context, req, it, name = std::string(name)]() -> Task<> {
     try {
       auto& file_context = it->second;
-      if (!file_context.children ||
-          file_context.children->find(name) == file_context.children->end()) {
-        std::unordered_map<std::string, int64_t> children;
-        stdx::stop_source stop_source;
-        fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-        FOR_CO_AWAIT(std::vector<FileContext> & page,
-                     context->context.ReadDirectory(it->second.context,
-                                                    stop_source.get_token())) {
-          for (FileContext& entry : page) {
-            auto generic_item = FileSystemContext::GetGenericItem(entry);
-            children.emplace(generic_item.name,
-                             CreateNode(context, std::move(entry)));
+      stdx::stop_source stop_source;
+      fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+      FOR_CO_AWAIT(std::vector<FileContext> & page,
+                   context->context.ReadDirectory(it->second.context,
+                                                  stop_source.get_token())) {
+        for (FileContext& entry : page) {
+          auto item = FileSystemContext::GetGenericItem(entry);
+          if (item.name == name) {
+            fuse_entry_param fuse_entry = {};
+            fuse_entry.attr = ToStat(item);
+            fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+            context->file_context[fuse_entry.attr.st_ino].refcount++;
+            fuse_entry.attr_timeout = kMetadataTimeout;
+            fuse_entry.entry_timeout = kMetadataTimeout;
+            fuse_entry.generation = 1;
+            fuse_entry.ino = fuse_entry.attr.st_ino;
+            fuse_reply_entry(req, &fuse_entry);
+            co_return;
           }
         }
-        file_context.children = std::move(children);
       }
-      auto entry_it = file_context.children->find(name);
-      if (entry_it == file_context.children->end()) {
-        fuse_reply_err(req, ENOENT);
-        co_return;
-      }
-      auto file_context_it = context->file_context.find(entry_it->second);
-      if (file_context_it == context->file_context.end()) {
-        fuse_reply_err(req, ENOENT);
-        co_return;
-      }
-      auto item =
-          FileSystemContext::GetGenericItem(file_context_it->second.context);
-      fuse_entry_param entry = {};
-      entry.attr = ToStat(item);
-      entry.attr.st_ino = entry_it->second;
-      entry.attr_timeout = kMetadataTimeout;
-      entry.entry_timeout = kMetadataTimeout;
-      entry.generation = 1;
-      entry.ino = entry.attr.st_ino;
-      file_context_it->second.refcount++;
-      fuse_reply_entry(req, &entry);
+      fuse_reply_err(req, ENOENT);
     } catch (const CloudException& e) {
       fuse_reply_err(req, ToPosixError(e));
     } catch (const InterruptedException&) {
