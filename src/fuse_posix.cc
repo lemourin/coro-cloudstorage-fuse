@@ -238,7 +238,7 @@ void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
             }
           } else {
             next_token = {.page_index = read_dir_token.page_index,
-                          .offset = read_dir_token.offset + 1};
+                          .offset = i + 1};
           }
           offset +=
               fuse_add_direntry_plus(req, buffer.data() + offset, size - offset,
