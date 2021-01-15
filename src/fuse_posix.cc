@@ -418,10 +418,12 @@ int Run(int argc, char** argv) {
           fuse_buf buffer = {};
           int size = fuse_session_receive_buf(data->session, &buffer);
           if (size < 0) {
-            throw std::runtime_error(strerror(-size));
+            std::cerr << "FATAL ERROR:" << strerror(-size) << "\n";
+            fuse_session_exit(data->session);
+          } else {
+            fuse_session_process_buf(data->session, &buffer);
+            free(buffer.mem);
           }
-          fuse_session_process_buf(data->session, &buffer);
-          free(buffer.mem);
 
           if (fuse_session_exited(data->session)) {
             event_del(&data->fuse_event);
@@ -446,7 +448,9 @@ int Run(int argc, char** argv) {
         },
         &cb_data));
     CheckEvent(event_add(&cb_data.signal_event, nullptr));
-    CheckEvent(event_base_dispatch(event_base.get()));
+    if (event_base_dispatch(event_base.get()) != 1) {
+      throw std::runtime_error("event_base_dispatch failed");
+    }
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
