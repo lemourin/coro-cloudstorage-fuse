@@ -86,6 +86,12 @@ void Check(int d) {
   }
 }
 
+void CheckEvent(int d) {
+  if (d != 0) {
+    throw std::runtime_error("libevent error");
+  }
+}
+
 int ToPosixError(const CloudException& e) {
   switch (e.type()) {
     case CloudException::Type::kNotFound:
@@ -404,7 +410,7 @@ int Run(int argc, char** argv) {
         AtScopeExit([&] { fuse_session_unmount(session.get()); });
 
     int fd = fuse_session_fd(session.get());
-    event_assign(
+    CheckEvent(event_assign(
         &cb_data.fuse_event, event_base.get(), fd, EV_READ | EV_PERSIST,
         [](evutil_socket_t fd, short, void* d) {
           auto data = reinterpret_cast<CallbackData*>(d);
@@ -424,10 +430,10 @@ int Run(int argc, char** argv) {
             return;
           }
         },
-        &cb_data);
-    event_add(&cb_data.fuse_event, nullptr);
+        &cb_data));
+    CheckEvent(event_add(&cb_data.fuse_event, nullptr));
 
-    event_assign(
+    CheckEvent(event_assign(
         &cb_data.signal_event, event_base.get(), SIGINT, EV_SIGNAL,
         [](evutil_socket_t fd, short, void* d) {
           auto data = reinterpret_cast<CallbackData*>(d);
@@ -438,9 +444,9 @@ int Run(int argc, char** argv) {
             data->context->context.Quit();
           }
         },
-        &cb_data);
-    event_add(&cb_data.signal_event, nullptr);
-    event_base_dispatch(event_base.get());
+        &cb_data));
+    CheckEvent(event_add(&cb_data.signal_event, nullptr));
+    CheckEvent(event_base_dispatch(event_base.get()));
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
