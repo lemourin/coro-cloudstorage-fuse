@@ -419,6 +419,55 @@ auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
 }
 
 template <typename... T>
+auto FileSystemContext<TypeList<T...>>::CreateDirectory(
+    const FileContext& item, std::string_view name, stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
+  co_return co_await std::visit(
+      [&http = http_, name, stop_token = stop_source.get_token()](
+          auto& p) mutable -> Task<FileContext> {
+        using CloudProviderT =
+            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
+        auto new_directory = co_await std::visit(
+            [&](auto& d) -> Task<FileContext> {
+              if constexpr (IsDirectory<decltype(d), CloudProviderT>) {
+                auto new_directory = co_await p.provider()->CreateDirectory(
+                    d, std::string(name), std::move(stop_token));
+                co_return FileContext{.item = Item<CloudProviderT>(
+                                          p.account, std::move(new_directory))};
+              } else {
+                throw std::invalid_argument("not a directory");
+              }
+            },
+            p.item);
+        http.InvalidateCache();
+        co_return std::move(new_directory);
+      },
+      *item.item);
+}
+
+template <typename... T>
+Task<> FileSystemContext<TypeList<T...>>::Remove(const FileContext& item,
+                                                 stdx::stop_token stop_token) {
+  stdx::stop_source stop_source;
+  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
+  stdx::stop_callback cb2(stop_source_.get_token(),
+                          [&] { stop_source.request_stop(); });
+  co_await std::visit(
+      [&http = http_,
+       stop_token = stop_source.get_token()](auto& p) mutable -> Task<> {
+        using CloudProviderT =
+            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
+        co_await p.provider()->RemoveItem(p.item, std::move(stop_token));
+        http.InvalidateCache();
+      },
+      *item.item);
+}
+
+template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
     -> std::shared_ptr<CloudProviderAccount> {
   auto it = std::find_if(accounts_.begin(), accounts_.end(),

@@ -169,6 +169,19 @@ struct stat ToStat(const FileSystemContext::GenericItem& item) {
   return stat;
 }
 
+fuse_entry_param CreateFuseEntry(FuseContext* context, FileContext entry) {
+  auto item = FileSystemContext::GetGenericItem(entry);
+  fuse_entry_param fuse_entry = {};
+  fuse_entry.attr = ToStat(item);
+  fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+  context->file_context[fuse_entry.attr.st_ino].refcount++;
+  fuse_entry.attr_timeout = kMetadataTimeout;
+  fuse_entry.entry_timeout = kMetadataTimeout;
+  fuse_entry.generation = 1;
+  fuse_entry.ino = fuse_entry.attr.st_ino;
+  return fuse_entry;
+}
+
 void InterruptRequest(fuse_req_t, void* user_data) {
   reinterpret_cast<stdx::stop_source*>(user_data)->request_stop();
 }
@@ -299,15 +312,7 @@ Task<> Lookup(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
   std::string name = name_c_str;
   auto entry = co_await FindFile(context, file_context.context, name,
                                  stop_source.get_token());
-  auto item = FileSystemContext::GetGenericItem(entry);
-  fuse_entry_param fuse_entry = {};
-  fuse_entry.attr = ToStat(item);
-  fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
-  context->file_context[fuse_entry.attr.st_ino].refcount++;
-  fuse_entry.attr_timeout = kMetadataTimeout;
-  fuse_entry.entry_timeout = kMetadataTimeout;
-  fuse_entry.generation = 1;
-  fuse_entry.ino = fuse_entry.attr.st_ino;
+  fuse_entry_param fuse_entry = CreateFuseEntry(context, std::move(entry));
   fuse_reply_entry(req, &fuse_entry);
 }
 
@@ -386,6 +391,41 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   fuse_reply_err(req, 0);
 }
 
+Task<> MkDir(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto it = context->file_context.find(parent);
+  if (it == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    co_return;
+  }
+
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  auto new_directory = co_await context->context.CreateDirectory(
+      it->second.context, std::string(name), stop_source.get_token());
+
+  fuse_entry_param entry = CreateFuseEntry(context, std::move(new_directory));
+  fuse_reply_entry(req, &entry);
+  co_return;
+}
+
+Task<> Unlink(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto it = context->file_context.find(parent);
+  if (it == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    co_return;
+  }
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+
+  std::string name = name_c_str;
+  auto item = co_await FindFile(context, it->second.context, name,
+                                stop_source.get_token());
+  co_await context->context.Remove(item, stop_source.get_token());
+  fuse_reply_err(req, 0);
+}
+
 }  // namespace
 
 int Run(int argc, char** argv) {
@@ -424,6 +464,9 @@ int Run(int argc, char** argv) {
                                   .lookup = CoroutineT<Lookup>,
                                   .forget = Forget,
                                   .getattr = GetAttr,
+                                  .mkdir = CoroutineT<MkDir>,
+                                  .unlink = CoroutineT<Unlink>,
+                                  .rmdir = CoroutineT<Unlink>,
                                   .rename = CoroutineT<Rename>,
                                   .open = Open,
                                   .read = CoroutineT<Read>,
