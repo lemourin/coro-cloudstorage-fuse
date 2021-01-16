@@ -186,7 +186,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   Task<std::string> Read(const FileContext&, int64_t offset, int64_t size,
                          stdx::stop_token) const;
   Task<FileContext> Rename(const FileContext& item, std::string_view new_name,
-                           stdx::stop_token) const;
+                           stdx::stop_token);
 
   void Quit();
   void Cancel();
@@ -208,6 +208,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   stdx::stop_source stop_source_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
   bool quit_called_ = false;
+  Http http_;
 };
 
 extern template class FileSystemContext<CloudProviders>;

@@ -99,7 +99,9 @@ void FileSystemContext<TypeList<T...>>::AccountListener::OnDestroy(
 
 template <typename... T>
 FileSystemContext<TypeList<T...>>::FileSystemContext(event_base* event_base)
-    : event_base_(event_base), event_loop_(event_base_) {
+    : event_base_(event_base),
+      event_loop_(event_base_),
+      http_(http::CurlHttp(event_base)) {
   Invoke(Main());
 }
 
@@ -389,9 +391,10 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
 }
 
 template <typename... T>
-auto FileSystemContext<TypeList<T...>>::Rename(
-    const FileContext& item, std::string_view new_name,
-    stdx::stop_token stop_token) const -> Task<FileContext> {
+auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
+                                               std::string_view new_name,
+                                               stdx::stop_token stop_token)
+    -> Task<FileContext> {
   if (!item.item) {
     throw CloudException("cannot rename root");
   }
@@ -402,12 +405,13 @@ auto FileSystemContext<TypeList<T...>>::Rename(
                           [&] { stop_source.request_stop(); });
 
   co_return co_await std::visit(
-      [new_name, stop_token = stop_source.get_token()](
+      [&http = http_, new_name, stop_token = stop_source.get_token()](
           auto& p) mutable -> Task<FileContext> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
         auto item = co_await p.provider()->RenameItem(
             p.item, std::string(new_name), std::move(stop_token));
+        http.InvalidateCache();
         co_return FileContext{
             .item = Item<CloudProviderT>(p.account, std::move(item))};
       },
@@ -428,8 +432,7 @@ auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
 
 template <typename... T>
 Task<> FileSystemContext<TypeList<T...>>::Main() {
-  Http http{http::CurlHttp(event_base_)};
-  CloudFactory cloud_factory(event_loop_, http);
+  CloudFactory cloud_factory(event_loop_, http_);
   http::HttpServer http_server(
       event_base_, {.address = "0.0.0.0", .port = 12345},
       AccountManagerHandlerT(cloud_factory, AccountListener{this}));
