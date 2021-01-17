@@ -1,6 +1,7 @@
 #include "fuse_posix.h"
 
 #define FUSE_USE_VERSION 39
+#include <coro/util/function_traits.h>
 #include <fuse.h>
 #include <fuse_lowlevel.h>
 

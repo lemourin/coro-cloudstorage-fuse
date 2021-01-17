@@ -2,11 +2,14 @@
 
 #include <coro/cloudstorage/cloud_exception.h>
 #include <coro/http/http_server.h>
+#include <coro/util/stop_token_or.h>
 
 namespace coro::cloudstorage::internal {
 
 namespace {
 
+using ::coro::util::AtScopeExit;
+using ::coro::util::StopTokenOr;
 using ::coro::util::TypeList;
 
 template <typename T>
@@ -16,32 +19,6 @@ concept HasUsageData = requires(T v) {
   { v.space_total }
   ->stdx::convertible_to<int64_t>;
 };
-
-template <typename F>
-auto AtScopeExit(F func) {
-  struct Guard {
-    explicit Guard(F func) : func(std::move(func)) {}
-    ~Guard() {
-      if (func) {
-        (*func)();
-      }
-    }
-    Guard(const Guard&) = delete;
-    Guard(Guard&& other) noexcept {
-      func = std::move(other.func);
-      other.func = std::nullopt;
-    }
-    Guard& operator=(const Guard&) = delete;
-    Guard& operator=(Guard&& other) noexcept {
-      func = std::move(other.func);
-      other.func = std::nullopt;
-      return *this;
-    }
-
-    std::optional<F> func;
-  };
-  return Guard(std::move(func));
-}
 
 template <typename T, typename C>
 std::vector<T> SplitString(const T& string, C delim) {
@@ -146,17 +123,14 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   co_return co_await std::visit(
       [&](auto& d) -> Task<FileContext> {
         using CloudProvider = std::remove_cvref_t<decltype(d)>;
         co_return FileContext{
             .item = Item<CloudProvider>(
                 account, co_await d.GetItemByPath(provider_path,
-                                                  stop_source.get_token()))};
+                                                  stop_token_or.GetToken()))};
       },
       account->provider);
 }
@@ -184,15 +158,10 @@ template <typename... T>
 auto FileSystemContext<TypeList<T...>>::ReadDirectory(
     const FileContext& context, stdx::stop_token stop_token) const
     -> Generator<std::vector<FileContext>> {
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
-
   std::optional<std::string> page_token;
   do {
-    auto page_data = co_await ReadDirectoryPage(context, std::move(page_token),
-                                                stop_source.get_token());
+    auto page_data =
+        co_await ReadDirectoryPage(context, std::move(page_token), stop_token);
     page_token = std::move(page_data.next_page_token);
     co_yield std::move(page_data.items);
   } while (page_token);
@@ -202,11 +171,7 @@ template <typename... T>
 auto FileSystemContext<TypeList<T...>>::ReadDirectoryPage(
     const FileContext& context, std::optional<std::string> page_token,
     stdx::stop_token stop_token) const -> Task<PageData> {
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
-
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
@@ -214,7 +179,8 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectoryPage(
           [&](auto& provider) -> Task<FileContext> {
             using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
             FileContext context = {};
-            auto directory = co_await provider.GetRoot(stop_source.get_token());
+            auto directory =
+                co_await provider.GetRoot(stop_token_or.GetToken());
             directory.name = account->id;
             context.item = Item<CloudProviderT>(account, std::move(directory));
             co_return context;
@@ -226,22 +192,20 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectoryPage(
   }
 
   co_return co_await std::visit(
-      GetDirectoryPage{std::move(page_token), stop_source.get_token()},
+      GetDirectoryPage{std::move(page_token), stop_token_or.GetToken()},
       *context.item);
 }
 
 template <typename... T>
 auto FileSystemContext<TypeList<T...>>::GetVolumeData(
     stdx::stop_token stop_token) const -> Task<VolumeData> {
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
     tasks.emplace_back(std::visit(
         [&](auto& provider) -> Task<VolumeData> {
-          auto data = co_await provider.GetGeneralData(stop_source.get_token());
+          auto data =
+              co_await provider.GetGeneralData(stop_token_or.GetToken());
           if constexpr (HasUsageData<decltype(data)>) {
             co_return VolumeData{.space_used = data.space_used,
                                  .space_total = data.space_total};
@@ -271,11 +235,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     stdx::stop_token stop_token) const {
   using QueuedRead = typename FileContext::QueuedRead;
 
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
-
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   if (!context.item) {
     throw CloudException("not a file");
   }
@@ -292,7 +252,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
         const int max_wait = 128;
         int current_delay = 0;
         while (!current_read->pending && current_delay < max_wait) {
-          co_await event_loop_.Wait(current_delay, stop_source.get_token());
+          co_await event_loop_.Wait(current_delay, stop_token_or.GetToken());
           current_delay = current_delay * 2 + 1;
         }
       }
@@ -328,7 +288,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                   if constexpr (IsFile<decltype(item), CloudProviderT>) {
                     return d.provider()->GetFileContent(
                         item, http::Range{.start = offset},
-                        stop_source.get_token());
+                        stop_token_or.GetToken());
                   } else {
                     throw std::invalid_argument("not a file");
                   }
@@ -399,13 +359,9 @@ auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
     throw CloudException("cannot rename root");
   }
 
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
-
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   co_return co_await std::visit(
-      [&http = http_, new_name, stop_token = stop_source.get_token()](
+      [&http = http_, new_name, stop_token = stop_token_or.GetToken()](
           auto& p) mutable -> Task<FileContext> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
@@ -422,12 +378,9 @@ template <typename... T>
 auto FileSystemContext<TypeList<T...>>::CreateDirectory(
     const FileContext& item, std::string_view name, stdx::stop_token stop_token)
     -> Task<FileContext> {
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   co_return co_await std::visit(
-      [&http = http_, name, stop_token = stop_source.get_token()](
+      [&http = http_, name, stop_token = stop_token_or.GetToken()](
           auto& p) mutable -> Task<FileContext> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
@@ -452,13 +405,10 @@ auto FileSystemContext<TypeList<T...>>::CreateDirectory(
 template <typename... T>
 Task<> FileSystemContext<TypeList<T...>>::Remove(const FileContext& item,
                                                  stdx::stop_token stop_token) {
-  stdx::stop_source stop_source;
-  stdx::stop_callback cb1(stop_token, [&] { stop_source.request_stop(); });
-  stdx::stop_callback cb2(stop_source_.get_token(),
-                          [&] { stop_source.request_stop(); });
+  StopTokenOr stop_token_or(stop_source_.get_token(), std::move(stop_token));
   co_await std::visit(
       [&http = http_,
-       stop_token = stop_source.get_token()](auto& p) mutable -> Task<> {
+       stop_token = stop_token_or.GetToken()](auto& p) mutable -> Task<> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
         co_await p.provider()->RemoveItem(p.item, std::move(stop_token));
