@@ -397,6 +397,43 @@ auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
 }
 
 template <typename... T>
+auto FileSystemContext<TypeList<T...>>::Move(const FileContext& source,
+                                             const FileContext& destination,
+                                             stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  if (!source.item || !destination.item) {
+    throw CloudException("cannot move from / to root");
+  }
+  if (source.item->index() != destination.item->index()) {
+    throw CloudException("cannot move between different accounts");
+  }
+  auto stop_token_or = GetToken(source, std::move(stop_token));
+  co_return co_await std::visit(
+      [&destination, &http = http_, stop_token = stop_token_or.GetToken()](
+          auto& source) mutable -> Task<FileContext> {
+        using ItemT = std::remove_cvref_t<decltype(source)>;
+        using CloudProviderT = typename ItemT::CloudProviderT;
+
+        co_return co_await std::visit(
+            [&](auto& destination) mutable -> Task<FileContext> {
+              if constexpr (IsDirectory<decltype(destination),
+                                        CloudProviderT>) {
+                auto item = co_await source.provider()->MoveItem(
+                    std::move(source.item), std::move(destination),
+                    std::move(stop_token));
+                http.InvalidateCache();
+                co_return FileContext{.item = Item<CloudProviderT>(
+                                          source.account, std::move(item))};
+              } else {
+                throw std::invalid_argument("cannot move into non directory");
+              }
+            },
+            std::get<ItemT>(*destination.item).item);
+      },
+      *source.item);
+}
+
+template <typename... T>
 auto FileSystemContext<TypeList<T...>>::CreateDirectory(
     const FileContext& item, std::string_view name, stdx::stop_token stop_token)
     -> Task<FileContext> {

@@ -353,19 +353,9 @@ Task<> Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
               fuse_ino_t new_parent, const char* new_name_c_str,
               unsigned int flags) {
-  if (parent != new_parent) {
-    fuse_reply_err(req, EIO);
-    co_return;
-  }
-
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it_parent = context->file_context.find(parent);
   if (it_parent == context->file_context.end()) {
-    fuse_reply_err(req, ENOENT);
-    co_return;
-  }
-  auto it_new_parent = context->file_context.find(new_parent);
-  if (it_new_parent == context->file_context.end()) {
     fuse_reply_err(req, ENOENT);
     co_return;
   }
@@ -374,11 +364,26 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   std::string new_name = new_name_c_str;
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-  auto item = co_await FindFile(context, it_parent->second.context, name,
-                                stop_source.get_token());
-  std::string previous_id = FileSystemContext::GetGenericItem(item).id;
-  auto new_item =
-      co_await context->context.Rename(item, new_name, stop_source.get_token());
+  auto source_item = co_await FindFile(context, it_parent->second.context, name,
+                                       stop_source.get_token());
+  std::string previous_id = FileSystemContext::GetGenericItem(source_item).id;
+
+  FileContext new_item = {.item = source_item.item};
+  if (name != new_name) {
+    new_item = co_await context->context.Rename(source_item, new_name,
+                                                stop_source.get_token());
+  }
+
+  if (parent != new_parent) {
+    auto it_new_parent = context->file_context.find(new_parent);
+    if (it_new_parent == context->file_context.end()) {
+      fuse_reply_err(req, ENOENT);
+      co_return;
+    }
+    new_item = co_await context->context.Move(
+        new_item, it_new_parent->second.context, stop_source.get_token());
+  }
+
   if (auto it = context->inode.find(previous_id);
       it != std::end(context->inode)) {
     auto inode = it->second;

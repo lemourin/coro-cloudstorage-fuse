@@ -187,6 +187,8 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
                          stdx::stop_token) const;
   Task<FileContext> Rename(const FileContext& item, std::string_view new_name,
                            stdx::stop_token);
+  Task<FileContext> Move(const FileContext& source,
+                         const FileContext& destination, stdx::stop_token);
   Task<FileContext> CreateDirectory(const FileContext& item,
                                     std::string_view name, stdx::stop_token);
   Task<> Remove(const FileContext&, stdx::stop_token);
