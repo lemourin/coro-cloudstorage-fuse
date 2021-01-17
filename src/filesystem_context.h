@@ -208,7 +208,6 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   coro::Promise<void> quit_;
   event_base* event_base_;
   coro::util::EventLoop event_loop_;
-  stdx::stop_source stop_source_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
   bool quit_called_ = false;
   Http http_;
