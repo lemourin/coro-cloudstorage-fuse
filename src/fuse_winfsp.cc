@@ -62,6 +62,17 @@ NTSTATUS ToStatus(const CloudException& e) {
   }
 }
 
+std::pair<std::string, std::string> SplitPath(std::string_view path) {
+  auto it = path.find_last_of('/');
+  if (it == std::string::npos) {
+    throw std::invalid_argument("invalid path");
+  }
+  return {
+      std::string(path.begin(), path.begin() + it),
+      std::string(path.begin() + it + 1, path.end()),
+  };
+}
+
 class FileSystemException : public std::exception {
  public:
   explicit FileSystemException(HRESULT status)
@@ -301,7 +312,27 @@ class WinFspContext {
                          PSECURITY_DESCRIPTOR security_descriptor,
                          UINT64 allocation_size, PVOID* file_context,
                          FSP_FSCTL_FILE_INFO* file_info) {
-    return STATUS_NOT_IMPLEMENTED;
+    auto context = static_cast<FileSystemContext*>(fs->UserContext);
+    if (!(create_options & FILE_DIRECTORY_FILE)) {
+      return STATUS_NOT_IMPLEMENTED;
+    }
+    return context->Do([=]() -> Task<NTSTATUS> {
+      try {
+        const auto& [directory_name, file_name] =
+            SplitPath(ToUnixPath(filename));
+        FileContext parent = co_await context->GetFileContext(
+            directory_name, stdx::stop_token());
+        FileContext new_item(co_await context->CreateDirectory(
+            parent, file_name, stdx::stop_token()));
+        ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
+        *file_context = new FileContext(std::move(new_item));
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        co_return ToStatus(e);
+      } catch (const std::exception&) {
+        co_return STATUS_INVALID_DEVICE_REQUEST;
+      }
+    });
   }
 
   static NTSTATUS Overwrite(FSP_FILE_SYSTEM* fs, PVOID file_context,
@@ -350,7 +381,59 @@ class WinFspContext {
   }
 
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
-                      ULONG flags) {}
+                      ULONG flags) {
+    auto context = static_cast<FileSystemContext*>(fs->UserContext);
+    auto file = static_cast<FileContext*>(file_context);
+    if (flags & FspCleanupDelete) {
+      context->Do([=]() -> Task<NTSTATUS> {
+        try {
+          co_await context->Remove(*file, stdx::stop_token());
+          co_return STATUS_SUCCESS;
+        } catch (const std::exception&) {
+          co_return STATUS_INVALID_DEVICE_REQUEST;
+        }
+      });
+    }
+  }
+
+  static NTSTATUS CanDelete(FSP_FILE_SYSTEM* fs, PVOID file_context,
+                            PWSTR file_name) {
+    return STATUS_SUCCESS;
+  }
+
+  static NTSTATUS Rename(FSP_FILE_SYSTEM* fs, PVOID file_context,
+                         PWSTR file_name, PWSTR new_file_name,
+                         BOOLEAN replace_if_exists) {
+    auto context = static_cast<FileSystemContext*>(fs->UserContext);
+    return context->Do([=]() -> Task<NTSTATUS> {
+      try {
+        const auto& [source_directory_name, source_file_name] =
+            SplitPath(ToUnixPath(file_name));
+        const auto& [destination_directory_name, destination_file_name] =
+            SplitPath(ToUnixPath(new_file_name));
+
+        auto source_item = reinterpret_cast<FileContext*>(file_context);
+        FileContext new_item = {.item = source_item->item};
+        if (source_file_name != destination_file_name) {
+          new_item = co_await context->Rename(
+              *source_item, destination_file_name, stdx::stop_token());
+        }
+        if (source_directory_name != destination_directory_name) {
+          *source_item = co_await context->Move(
+              new_item,
+              co_await context->GetFileContext(destination_directory_name,
+                                               stdx::stop_token()),
+              stdx::stop_token());
+        }
+
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        co_return ToStatus(e);
+      } catch (const std::exception&) {
+        co_return STATUS_INVALID_DEVICE_REQUEST;
+      }
+    });
+  }
 
   struct EventBaseDeleter {
     void operator()(event_base* event_base) const {
@@ -366,7 +449,7 @@ class WinFspContext {
                                             .CaseSensitiveSearch = 1,
                                             .CasePreservedNames = 1,
                                             .UnicodeOnDisk = 1,
-                                            .ReadOnlyVolume = 1,
+                                            .ReadOnlyVolume = 0,
                                             .UmFileContextIsUserContext2 = 1,
                                             .Prefix = L"\\cloud\\share",
                                             .FileSystemName = L"cloud"};
@@ -384,8 +467,8 @@ class WinFspContext {
                                            .GetFileInfo = nullptr,
                                            .SetBasicInfo = nullptr,
                                            .SetFileSize = nullptr,
-                                           .CanDelete = nullptr,
-                                           .Rename = nullptr,
+                                           .CanDelete = CanDelete,
+                                           .Rename = Rename,
                                            .GetSecurity = nullptr,
                                            .SetSecurity = nullptr,
                                            .ReadDirectory = ReadDirectory};
