@@ -387,11 +387,15 @@ auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
           auto& p) mutable -> Task<FileContext> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
-        auto item = co_await p.provider()->RenameItem(
-            p.item, std::string(new_name), std::move(stop_token));
-        http.InvalidateCache();
-        co_return FileContext{
-            .item = Item<CloudProviderT>(p.account, std::move(item))};
+        if constexpr (CanRename<decltype(p.item), CloudProviderT>) {
+          auto item = co_await p.provider()->RenameItem(
+              p.item, std::string(new_name), std::move(stop_token));
+          http.InvalidateCache();
+          co_return FileContext{
+              .item = Item<CloudProviderT>(p.account, std::move(item))};
+        } else {
+          throw std::runtime_error("rename not supported");
+        }
       },
       *item.item);
 }
@@ -418,12 +422,17 @@ auto FileSystemContext<TypeList<T...>>::Move(const FileContext& source,
             [&](auto& destination) mutable -> Task<FileContext> {
               if constexpr (IsDirectory<decltype(destination),
                                         CloudProviderT>) {
-                auto item = co_await source.provider()->MoveItem(
-                    std::move(source.item), std::move(destination),
-                    std::move(stop_token));
-                http.InvalidateCache();
-                co_return FileContext{.item = Item<CloudProviderT>(
-                                          source.account, std::move(item))};
+                if constexpr (CanMove<decltype(source.item), decltype(destination),
+                                      CloudProviderT>) {
+                  auto item = co_await source.provider()->MoveItem(
+                      std::move(source.item), std::move(destination),
+                      std::move(stop_token));
+                  http.InvalidateCache();
+                  co_return FileContext{.item = Item<CloudProviderT>(
+                                            source.account, std::move(item))};
+                } else {
+                  throw std::runtime_error("move not supported");
+                }
               } else {
                 throw std::invalid_argument("cannot move into non directory");
               }
@@ -446,12 +455,17 @@ auto FileSystemContext<TypeList<T...>>::CreateDirectory(
         auto new_directory = co_await std::visit(
             [&](auto& d) -> Task<FileContext> {
               if constexpr (IsDirectory<decltype(d), CloudProviderT>) {
-                auto new_directory = co_await p.provider()->CreateDirectory(
-                    d, std::string(name), std::move(stop_token));
-                co_return FileContext{.item = Item<CloudProviderT>(
-                                          p.account, std::move(new_directory))};
+                if constexpr (CanCreateDirectory<decltype(d), CloudProviderT>) {
+                  auto new_directory = co_await p.provider()->CreateDirectory(
+                      d, std::string(name), std::move(stop_token));
+                  co_return FileContext{
+                      .item = Item<CloudProviderT>(p.account,
+                                                   std::move(new_directory))};
+                } else {
+                  throw std::runtime_error("createdirectory not supported");
+                }
               } else {
-                throw std::invalid_argument("not a directory");
+                throw std::invalid_argument("parent not a directory");
               }
             },
             p.item);
@@ -470,8 +484,12 @@ Task<> FileSystemContext<TypeList<T...>>::Remove(const FileContext& item,
        stop_token = stop_token_or.GetToken()](auto& p) mutable -> Task<> {
         using CloudProviderT =
             typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
-        co_await p.provider()->RemoveItem(p.item, std::move(stop_token));
-        http.InvalidateCache();
+        if constexpr (CanRemove<decltype(p.item), CloudProviderT>) {
+          co_await p.provider()->RemoveItem(p.item, std::move(stop_token));
+          http.InvalidateCache();
+        } else {
+          throw std::runtime_error("remove not supported");
+        }
       },
       *item.item);
 }
