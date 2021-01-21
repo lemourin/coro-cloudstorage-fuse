@@ -65,7 +65,7 @@ StopTokenOr GetToken(const FileContext& context, stdx::stop_token stop_token) {
   return StopTokenOr(
       std::move(stop_token),
       std::visit(
-          [&](const auto& d) {
+          [](const auto& d) {
             auto acc = d.account.lock();
             if (!acc) {
               throw CloudException(CloudException::Type::kNotFound);
@@ -74,6 +74,30 @@ StopTokenOr GetToken(const FileContext& context, stdx::stop_token stop_token) {
           },
           *context.item));
 }
+
+template <typename FileContext, typename Item>
+struct CreateFileVisitor {
+  template <typename Directory>
+  Task<FileContext> operator()(const Directory& parent) {
+    using CloudProviderT = typename Item::CloudProviderT;
+    if constexpr (IsDirectory<Directory, CloudProviderT> &&
+                  CanCreateFile<Directory, Generator<std::string>,
+                                CloudProviderT>) {
+      auto new_item = co_await d.provider()->CreateFile(
+          parent, name, std::move(content), size, std::move(stop_token));
+      FileContext file_context;
+      file_context.item = Item(d.account, std::move(new_item));
+      co_return std::move(file_context);
+    } else {
+      throw std::invalid_argument("not supported");
+    }
+  }
+  const Item& d;
+  std::string_view name;
+  Generator<std::string> content;
+  int64_t size;
+  stdx::stop_token stop_token;
+};
 
 }  // namespace
 
@@ -422,8 +446,8 @@ auto FileSystemContext<TypeList<T...>>::Move(const FileContext& source,
             [&](auto& destination) mutable -> Task<FileContext> {
               if constexpr (IsDirectory<decltype(destination),
                                         CloudProviderT>) {
-                if constexpr (CanMove<decltype(source.item), decltype(destination),
-                                      CloudProviderT>) {
+                if constexpr (CanMove<decltype(source.item),
+                                      decltype(destination), CloudProviderT>) {
                   auto item = co_await source.provider()->MoveItem(
                       std::move(source.item), std::move(destination),
                       std::move(stop_token));
@@ -492,6 +516,27 @@ Task<> FileSystemContext<TypeList<T...>>::Remove(const FileContext& item,
         }
       },
       *item.item);
+}
+
+template <typename... T>
+auto FileSystemContext<TypeList<T...>>::CreateFile(
+    const FileContext& parent, std::string_view name,
+    Generator<std::string> content, int64_t size, stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  if (!parent.item) {
+    throw CloudException("cannot create file directly under root");
+  }
+  auto stop_token_or = GetToken(parent, std::move(stop_token));
+  auto new_item = co_await std::visit(
+      [&](const auto& d) -> Task<FileContext> {
+        co_return co_await std::visit(
+            CreateFileVisitor<FileContext, std::remove_cvref_t<decltype(d)>>{
+                d, name, std::move(content), size, stop_token_or.GetToken()},
+            d.item);
+      },
+      *parent.item);
+  http_.InvalidateCache();
+  co_return std::move(new_item);
 }
 
 template <typename... T>

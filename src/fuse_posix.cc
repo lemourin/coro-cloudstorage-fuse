@@ -25,6 +25,14 @@ struct ReadDirToken {
   off_t offset;
 };
 
+struct FileDeleter {
+  void operator()(std::FILE* file) {
+    if (file) {
+      fclose(file);
+    }
+  }
+};
+
 ReadDirToken DecodeReadDirToken(off_t d) {
   return ReadDirToken{.page_index = d >> kIndexWidth,
                       .offset = d & ((1ll << kIndexWidth) - 1)};
@@ -36,8 +44,49 @@ off_t EncodeReadDirToken(ReadDirToken token) {
 
 struct FuseFileContext {
   FileContext context;
+  fuse_ino_t parent;
+  int flags;
   int64_t refcount;
   std::vector<std::string> page_token = {""};
+  struct NewFile {
+    std::unique_ptr<std::FILE, FileDeleter> tmp_file;
+    fuse_ino_t parent;
+    std::string name;
+  };
+  struct CreateFile {
+    Task<NewFile> operator()() {
+      if (new_file) {
+        co_return std::move(*new_file);
+      }
+      auto generic_item = FileSystemContext::GetGenericItem(file_context);
+      NewFile new_file{
+          .tmp_file = std::unique_ptr<std::FILE, FileDeleter>(std::tmpfile()),
+          .parent = parent,
+          .name = generic_item.name};
+      if (flags & O_TRUNC) {
+        co_return std::move(new_file);
+      }
+      int64_t size = generic_item.size.value();
+      int64_t offset = 0;
+      while (offset < size) {
+        auto chunk_size = std::min<int64_t>(size - offset, 4096);
+        auto chunk = co_await context->Read(file_context, offset, chunk_size,
+                                            coro::stdx::stop_token());
+        if (fwrite(chunk.data(), 1, chunk.size(), new_file.tmp_file.get()) !=
+            chunk.size()) {
+          throw std::runtime_error("write failure");
+        }
+        offset += chunk_size;
+      }
+      co_return std::move(new_file);
+    }
+    FileSystemContext* context;
+    FileContext file_context;
+    fuse_ino_t parent;
+    int flags;
+    std::optional<NewFile> new_file;
+  };
+  std::optional<SharedPromise<CreateFile>> new_file;
 };
 
 struct FuseContext {
@@ -129,7 +178,8 @@ template <auto F>
 constexpr auto CoroutineT =
     Coroutine<F, coro::util::ArgumentListTypeT<decltype(F)>>::Do;
 
-fuse_ino_t CreateNode(FuseContext* context, FileContext file_context) {
+fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
+                      FileContext file_context) {
   auto generic_item = FileSystemContext::GetGenericItem(file_context);
   auto item_id =
       std::visit(
@@ -139,12 +189,13 @@ fuse_ino_t CreateNode(FuseContext* context, FileContext file_context) {
           *file_context.item) +
       '#' + generic_item.id;
   if (auto it = context->inode.find(item_id); it != std::end(context->inode)) {
+    context->file_context[it->second] =
+        FuseFileContext{.context = std::move(file_context), .parent = parent};
     return it->second;
   } else {
     context->inode.emplace(item_id, context->next_inode);
-    context->file_context.emplace(
-        context->next_inode,
-        FuseFileContext{.context = std::move(file_context)});
+    context->file_context[context->next_inode] =
+        FuseFileContext{.context = std::move(file_context), .parent = parent};
     return context->next_inode++;
   }
 }
@@ -162,6 +213,25 @@ Task<FileContext> FindFile(FuseContext* context, const FileContext& parent,
   throw CloudException(CloudException::Type::kNotFound);
 }
 
+int64_t GetFileSize(std::FILE* file) {
+  fseek(file, 0, SEEK_END);
+  int64_t size = ftell(file);
+  fseek(file, 0, SEEK_SET);
+  return size;
+}
+
+Generator<std::string> ReadFile(std::FILE* file) {
+  const int kBufferSize = 4096;
+  char buffer[kBufferSize];
+  while (feof(file) == 0) {
+    size_t size = fread(buffer, 1, kBufferSize, file);
+    if (int error = ferror(file)) {
+      throw std::runtime_error("read error");
+    }
+    co_yield std::string(buffer, size);
+  }
+}
+
 struct stat ToStat(const FileSystemContext::GenericItem& item) {
   struct stat stat = {};
   stat.st_mode = (item.is_directory ? S_IFDIR : S_IFREG) | 0644;
@@ -170,11 +240,12 @@ struct stat ToStat(const FileSystemContext::GenericItem& item) {
   return stat;
 }
 
-fuse_entry_param CreateFuseEntry(FuseContext* context, FileContext entry) {
+fuse_entry_param CreateFuseEntry(FuseContext* context, fuse_ino_t parent,
+                                 FileContext entry) {
   auto item = FileSystemContext::GetGenericItem(entry);
   fuse_entry_param fuse_entry = {};
   fuse_entry.attr = ToStat(item);
-  fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+  fuse_entry.attr.st_ino = CreateNode(context, parent, std::move(entry));
   context->file_context[fuse_entry.attr.st_ino].refcount++;
   fuse_entry.attr_timeout = kMetadataTimeout;
   fuse_entry.entry_timeout = kMetadataTimeout;
@@ -214,8 +285,16 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     fuse_reply_err(req, ENOENT);
     return;
   }
+  std::cerr << "OPEN " << ino << " " << (fi->flags & O_TRUNC) << "\n";
   fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
-      .context = FileContext{.item = it->second.context.item}});
+      .context = FileContext{.item = it->second.context.item},
+      .flags = fi->flags,
+      .new_file = SharedPromise<FuseFileContext::CreateFile>(
+          FuseFileContext::CreateFile{
+              .context = &context->context,
+              .file_context = FileContext{.item = it->second.context.item},
+              .parent = it->second.parent,
+              .flags = fi->flags})});
   if (fuse_reply_open(req, fi) != 0) {
     delete reinterpret_cast<FuseFileContext*>(fi->fh);
   }
@@ -225,13 +304,16 @@ void OpenDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   Open(req, ino, fi);
 }
 
-void Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
-  delete reinterpret_cast<FuseFileContext*>(fi->fh);
+Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  std::unique_ptr<FuseFileContext> file_context(
+      reinterpret_cast<FuseFileContext*>(fi->fh));
   fuse_reply_err(req, 0);
+  co_return;
 }
 
-void ReleaseDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
-  Release(req, ino, fi);
+Task<> ReleaseDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
+  return Release(req, ino, fi);
 }
 
 Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
@@ -270,7 +352,7 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     auto generic_item = FileSystemContext::GetGenericItem(entry);
     fuse_entry_param fuse_entry = {};
     fuse_entry.attr = ToStat(generic_item);
-    fuse_entry.attr.st_ino = CreateNode(context, std::move(entry));
+    fuse_entry.attr.st_ino = CreateNode(context, ino, std::move(entry));
     fuse_entry.generation = 1;
     fuse_entry.ino = fuse_entry.attr.st_ino;
     fuse_entry.attr_timeout = kMetadataTimeout;
@@ -313,7 +395,8 @@ Task<> Lookup(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
   std::string name = name_c_str;
   auto entry = co_await FindFile(context, file_context.context, name,
                                  stop_source.get_token());
-  fuse_entry_param fuse_entry = CreateFuseEntry(context, std::move(entry));
+  fuse_entry_param fuse_entry =
+      CreateFuseEntry(context, parent, std::move(entry));
   fuse_reply_entry(req, &fuse_entry);
 }
 
@@ -410,8 +493,96 @@ Task<> MkDir(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode) {
   auto new_directory = co_await context->context.CreateDirectory(
       it->second.context, std::string(name), stop_source.get_token());
 
-  fuse_entry_param entry = CreateFuseEntry(context, std::move(new_directory));
+  fuse_entry_param entry =
+      CreateFuseEntry(context, parent, std::move(new_directory));
   fuse_reply_entry(req, &entry);
+  co_return;
+}
+
+Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
+              struct fuse_file_info* fi) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  fuse_entry_param entry = {};
+  entry.attr.st_ino = context->next_inode++;
+  entry.attr.st_mode = mode;
+  entry.attr_timeout = kMetadataTimeout;
+  entry.entry_timeout = kMetadataTimeout;
+  entry.generation = 1;
+  entry.ino = entry.attr.st_ino;
+  fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext(FuseFileContext{
+      .flags = fi->flags,
+      .new_file = SharedPromise<FuseFileContext::CreateFile>(
+          FuseFileContext::CreateFile{
+              .new_file = FuseFileContext::NewFile{
+                  .tmp_file =
+                      std::unique_ptr<std::FILE, FileDeleter>(std::tmpfile()),
+                  .parent = parent,
+                  .name = name}})}));
+  std::cerr << "create " << parent << " " << name << " " << entry.ino << "\n";
+  fuse_reply_create(req, &entry, fi);
+  co_return;
+}
+
+Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
+             off_t off, struct fuse_file_info* fi) {
+  auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
+  if (!file_context->new_file) {
+    fuse_reply_err(req, EIO);
+    co_return;
+  }
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  std::string buf(buf_cstr, size);
+  const FuseFileContext::NewFile& new_file =
+      co_await file_context->new_file->Get(stop_source.get_token());
+  if (fseek(new_file.tmp_file.get(), off, SEEK_SET) != 0) {
+    fuse_reply_err(req, errno);
+    co_return;
+  }
+  if (fwrite(buf.data(), 1, size, new_file.tmp_file.get()) != size) {
+    fuse_reply_err(req, errno);
+    co_return;
+  }
+  std::cerr << "WRITE " << ino << " " << off << "\n";
+  fuse_reply_write(req, size);
+  co_return;
+}
+
+Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
+  if (!(file_context->flags & (O_RDWR | O_WRONLY))) {
+    fuse_reply_err(req, 0);
+    co_return;
+  }
+  std::cerr << "FLUSH " << ino << "\n";
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  if (const auto& new_file_promise = file_context->new_file) {
+    const FuseFileContext::NewFile& new_file =
+        co_await new_file_promise->Get(stop_source.get_token());
+    if (fseek(new_file.tmp_file.get(), 0, SEEK_SET) != 0) {
+      fuse_reply_err(req, errno);
+      co_return;
+    }
+    auto parent_it = context->file_context.find(new_file.parent);
+    if (parent_it == context->file_context.end()) {
+      fuse_reply_err(req, ENOENT);
+      co_return;
+    }
+    const auto& parent = parent_it->second;
+    if (!parent.context.item) {
+      fuse_reply_err(req, EIO);
+      co_return;
+    }
+    std::cerr << "UPLOADING " << GetFileSize(new_file.tmp_file.get()) << "\n";
+    auto item = co_await context->context.CreateFile(
+        parent.context, new_file.name, ReadFile(new_file.tmp_file.get()),
+        GetFileSize(new_file.tmp_file.get()), stop_source.get_token());
+    CreateNode(context, new_file.parent, std::move(item));
+    std::cerr << "UPLOADED\n";
+  }
+  fuse_reply_err(req, 0);
   co_return;
 }
 
@@ -476,9 +647,12 @@ int Run(int argc, char** argv) {
                                   .rename = CoroutineT<Rename>,
                                   .open = Open,
                                   .read = CoroutineT<Read>,
-                                  .release = Release,
+                                  .write = CoroutineT<Write>,
+                                  .flush = CoroutineT<Flush>,
+                                  .release = CoroutineT<Release>,
                                   .opendir = OpenDir,
-                                  .releasedir = ReleaseDir,
+                                  .releasedir = CoroutineT<ReleaseDir>,
+                                  .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};
   try {
     FuseContext context{.context = FileSystemContext(event_base.get()),

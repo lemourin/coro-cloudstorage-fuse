@@ -192,6 +192,9 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   Task<FileContext> CreateDirectory(const FileContext& item,
                                     std::string_view name, stdx::stop_token);
   Task<> Remove(const FileContext&, stdx::stop_token);
+  Task<FileContext> CreateFile(const FileContext& parent, std::string_view name,
+                               Generator<std::string> context, int64_t size,
+                               stdx::stop_token);
 
   void Quit();
   void Cancel();
