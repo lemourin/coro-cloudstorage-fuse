@@ -84,6 +84,14 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
       return &std::get<T>(acc->provider);
     }
 
+    stdx::stop_token stop_token() const {
+      auto acc = account.lock();
+      if (!acc) {
+        throw CloudException(CloudException::Type::kNotFound);
+      }
+      return acc->stop_source.get_token();
+    }
+
     auto GetGenericItem() const {
       return GenericItem{
           .id = std::visit(

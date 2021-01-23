@@ -64,15 +64,7 @@ StopTokenOr GetToken(const FileContext& context, stdx::stop_token stop_token) {
 
   return StopTokenOr(
       std::move(stop_token),
-      std::visit(
-          [](const auto& d) {
-            auto acc = d.account.lock();
-            if (!acc) {
-              throw CloudException(CloudException::Type::kNotFound);
-            }
-            return acc->stop_source.get_token();
-          },
-          *context.item));
+      std::visit([](const auto& d) { return d.stop_token(); }, *context.item));
 }
 
 template <typename FileContext, typename Item>
@@ -281,7 +273,6 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     stdx::stop_token stop_token) const {
   using QueuedRead = typename FileContext::QueuedRead;
 
-  auto stop_token_or = GetToken(context, std::move(stop_token));
   if (!context.item) {
     throw CloudException("not a file");
   }
@@ -297,6 +288,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
       if (offset - current_read->current_offset <= 4 * size) {
         const int max_wait = 128;
         int current_delay = 0;
+        auto stop_token_or = GetToken(context, stop_token);
         while (!current_read->pending && current_delay < max_wait) {
           co_await event_loop_.Wait(current_delay, stop_token_or.GetToken());
           current_delay = current_delay * 2 + 1;
@@ -333,8 +325,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                 [&](const auto& item) -> Generator<std::string> {
                   if constexpr (IsFile<decltype(item), CloudProviderT>) {
                     return d.provider()->GetFileContent(
-                        item, http::Range{.start = offset},
-                        stop_token_or.GetToken());
+                        item, http::Range{.start = offset}, d.stop_token());
                   } else {
                     throw std::invalid_argument("not a file");
                   }

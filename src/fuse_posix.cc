@@ -285,7 +285,6 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     fuse_reply_err(req, ENOENT);
     return;
   }
-  std::cerr << "OPEN " << ino << " " << (fi->flags & O_TRUNC) << "\n";
   fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
       .context = FileContext{.item = it->second.context.item},
       .flags = fi->flags,
@@ -518,7 +517,6 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
                       std::unique_ptr<std::FILE, FileDeleter>(std::tmpfile()),
                   .parent = parent,
                   .name = name}})}));
-  std::cerr << "create " << parent << " " << name << " " << entry.ino << "\n";
   fuse_reply_create(req, &entry, fi);
   co_return;
 }
@@ -543,7 +541,6 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
     fuse_reply_err(req, errno);
     co_return;
   }
-  std::cerr << "WRITE " << ino << " " << off << "\n";
   fuse_reply_write(req, size);
   co_return;
 }
@@ -555,7 +552,6 @@ Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     fuse_reply_err(req, 0);
     co_return;
   }
-  std::cerr << "FLUSH " << ino << "\n";
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (const auto& new_file_promise = file_context->new_file) {
