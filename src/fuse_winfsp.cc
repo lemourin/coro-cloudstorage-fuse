@@ -56,7 +56,7 @@ std::wstring ToWindowsPath(std::string_view string) {
 NTSTATUS ToStatus(const CloudException& e) {
   switch (e.type()) {
     case CloudException::Type::kNotFound:
-      return STATUS_NOT_FOUND;
+      return STATUS_OBJECT_NAME_NOT_FOUND;
     default:
       return STATUS_INVALID_PARAMETER;
   }
@@ -104,6 +104,10 @@ class WinFspContext {
  public:
   using FileContext = FileSystemContext::FileContext;
   using GenericItem = FileSystemContext::GenericItem;
+
+  struct FuseFileContext {
+    FileContext context;
+  };
 
   WinFspContext(PWSTR mountpoint)
       : event_base_([] {
@@ -190,7 +194,7 @@ class WinFspContext {
                                        stdx::stop_token());
       });
       ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
-      *file_context = new FileContext{std::move(data)};
+      *file_context = new FuseFileContext{.context = std::move(data)};
       return STATUS_SUCCESS;
     } catch (const CloudException& e) {
       return ToStatus(e);
@@ -225,7 +229,7 @@ class WinFspContext {
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     context->RunOnEventLoop([context, file_context]() -> Task<> {
-      delete reinterpret_cast<FileContext*>(file_context);
+      delete reinterpret_cast<FuseFileContext*>(file_context);
       co_return;
     });
   }
@@ -233,7 +237,7 @@ class WinFspContext {
   static NTSTATUS ReadDirectory(FSP_FILE_SYSTEM* fs, PVOID file_context_ptr,
                                 PWSTR pattern, PWSTR marker, PVOID buffer,
                                 ULONG buffer_length, PULONG bytes_transferred) {
-    auto file_context = reinterpret_cast<FileContext*>(file_context_ptr);
+    auto file_context = reinterpret_cast<FuseFileContext*>(file_context_ptr);
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     context->RunOnEventLoop([=, bytes_transferred =
@@ -255,7 +259,7 @@ class WinFspContext {
         std::vector<FileContext> data;
         FOR_CO_AWAIT(
             std::vector<FileContext> & page_data,
-            context->ReadDirectory(*file_context, stdx::stop_token())) {
+            context->ReadDirectory(file_context->context, stdx::stop_token())) {
           for (auto& item : page_data) {
             data.emplace_back(std::move(item));
           }
@@ -313,26 +317,38 @@ class WinFspContext {
                          UINT64 allocation_size, PVOID* file_context,
                          FSP_FSCTL_FILE_INFO* file_info) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
-    if (!(create_options & FILE_DIRECTORY_FILE)) {
-      return STATUS_NOT_IMPLEMENTED;
-    }
+    std::cerr << "CREATE\n";
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
         const auto& [directory_name, file_name] =
             SplitPath(ToUnixPath(filename));
         FileContext parent = co_await context->GetFileContext(
             directory_name, stdx::stop_token());
-        FileContext new_item(co_await context->CreateDirectory(
-            parent, file_name, stdx::stop_token()));
-        ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
-        *file_context = new FileContext(std::move(new_item));
-        co_return STATUS_SUCCESS;
+
+        if (create_options & FILE_DIRECTORY_FILE) {
+          FileContext new_item(co_await context->CreateDirectory(
+              parent, file_name, stdx::stop_token()));
+          ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
+          *file_context = new FuseFileContext{.context = std::move(new_item)};
+          co_return STATUS_SUCCESS;
+        } else {
+          std::cerr << "UNIMPLEMENTED!\n";
+          co_return STATUS_NOT_IMPLEMENTED;
+        }
       } catch (const CloudException& e) {
         co_return ToStatus(e);
       } catch (const std::exception&) {
         co_return STATUS_INVALID_DEVICE_REQUEST;
       }
     });
+  }
+
+  static NTSTATUS SetBasicInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
+                               UINT32 file_attributes, UINT64 creation_time,
+                               UINT64 last_access_time, UINT64 last_write_time,
+                               UINT64 change_time,
+                               FSP_FSCTL_FILE_INFO* file_info) {
+    return STATUS_SUCCESS;
   }
 
   static NTSTATUS Overwrite(FSP_FILE_SYSTEM* fs, PVOID file_context,
@@ -346,10 +362,10 @@ class WinFspContext {
   static NTSTATUS Read(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID buffer,
                        UINT64 offset, ULONG length, PULONG bytes_transferred) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
-    auto file = static_cast<FileContext*>(file_context);
+    auto file = static_cast<FuseFileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     if (static_cast<int64_t>(offset) >=
-        FileSystemContext::GetGenericItem(*file).size.value_or(0)) {
+        FileSystemContext::GetGenericItem(file->context).size.value_or(0)) {
       return STATUS_END_OF_FILE;
     }
     context->RunOnEventLoop([=]() -> Task<> {
@@ -361,8 +377,8 @@ class WinFspContext {
       response.IoStatus.Information = 0;
       try {
         std::string content = co_await context->Read(
-            *file, static_cast<int64_t>(offset), static_cast<int64_t>(length),
-            stdx::stop_token());
+            file->context, static_cast<int64_t>(offset),
+            static_cast<int64_t>(length), stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
@@ -378,6 +394,21 @@ class WinFspContext {
       }
     });
     return STATUS_PENDING;
+  }
+
+  static NTSTATUS Write(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID buffer,
+                        UINT64 offset, ULONG length,
+                        BOOLEAN write_to_end_of_file, BOOLEAN constrained_io,
+                        PULONG bytes_transferred,
+                        FSP_FSCTL_FILE_INFO* file_info) {
+    std::cerr << "WRITE\n";
+    return STATUS_NOT_IMPLEMENTED;
+  }
+
+  static NTSTATUS Flush(FSP_FILE_SYSTEM* fs, PVOID file_context,
+                        FSP_FSCTL_FILE_INFO* file_info) {
+    std::cerr << "FLUSH\n";
+    return STATUS_NOT_IMPLEMENTED;
   }
 
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
@@ -412,14 +443,14 @@ class WinFspContext {
         const auto& [destination_directory_name, destination_file_name] =
             SplitPath(ToUnixPath(new_file_name));
 
-        auto source_item = reinterpret_cast<FileContext*>(file_context);
-        FileContext new_item = {.item = source_item->item};
+        auto source_item = reinterpret_cast<FuseFileContext*>(file_context);
+        FileContext new_item = {.item = source_item->context.item};
         if (source_file_name != destination_file_name) {
           new_item = co_await context->Rename(
-              *source_item, destination_file_name, stdx::stop_token());
+              source_item->context, destination_file_name, stdx::stop_token());
         }
         if (source_directory_name != destination_directory_name) {
-          *source_item = co_await context->Move(
+          source_item->context = co_await context->Move(
               new_item,
               co_await context->GetFileContext(destination_directory_name,
                                                stdx::stop_token()),
@@ -462,10 +493,10 @@ class WinFspContext {
                                            .Cleanup = Cleanup,
                                            .Close = Close,
                                            .Read = Read,
-                                           .Write = nullptr,
-                                           .Flush = nullptr,
+                                           .Write = Write,
+                                           .Flush = Flush,
                                            .GetFileInfo = nullptr,
-                                           .SetBasicInfo = nullptr,
+                                           .SetBasicInfo = SetBasicInfo,
                                            .SetFileSize = nullptr,
                                            .CanDelete = CanDelete,
                                            .Rename = Rename,
