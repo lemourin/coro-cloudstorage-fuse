@@ -129,6 +129,14 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
       std::string chunk;
       int64_t current_offset;
       bool pending;
+      struct StopTokenData {
+        stdx::stop_source stop_source;
+        ::coro::util::StopTokenOr stop_token_or;
+        StopTokenData(stdx::stop_token root_token)
+            : stop_token_or(std::move(root_token), stop_source.get_token()) {}
+        ~StopTokenData() { stop_source.request_stop(); }
+      };
+      std::unique_ptr<StopTokenData> stop_token_data;
     };
     struct QueuedRead {
       Promise<void> awaiter;

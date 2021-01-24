@@ -276,6 +276,7 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   if (!context.item) {
     throw CloudException("not a file");
   }
+  auto stop_token_or = GetToken(context, stop_token);
   auto generic_item = GetGenericItem(context);
   if (!generic_item.size) {
     throw CloudException("size unknown");
@@ -288,7 +289,6 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
       if (offset - current_read->current_offset <= 4 * size) {
         const int max_wait = 128;
         int current_delay = 0;
-        auto stop_token_or = GetToken(context, stop_token);
         while (!current_read->pending && current_delay < max_wait) {
           co_await event_loop_.Wait(current_delay, stop_token_or.GetToken());
           current_delay = current_delay * 2 + 1;
@@ -317,7 +317,14 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
       std::cerr << "STARTING READ " << generic_item.name << " " << offset
                 << "\n";
       using CurrentRead = typename FileContext::CurrentRead;
-      auto generator = std::visit(
+      current_read = CurrentRead{
+          .current_offset = offset,
+          .pending = true,
+          .stop_token_data =
+              std::make_unique<typename CurrentRead::StopTokenData>(
+                  std::visit([](const auto& d) { return d.stop_token(); },
+                             *context.item))};
+      current_read->generator = std::visit(
           [&](const auto& d) {
             using CloudProviderT =
                 typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
@@ -325,7 +332,9 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                 [&](const auto& item) -> Generator<std::string> {
                   if constexpr (IsFile<decltype(item), CloudProviderT>) {
                     return d.provider()->GetFileContent(
-                        item, http::Range{.start = offset}, d.stop_token());
+                        item, http::Range{.start = offset},
+                        current_read->stop_token_data->stop_token_or
+                            .GetToken());
                   } else {
                     throw std::invalid_argument("not a file");
                   }
@@ -333,10 +342,10 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
                 d.item);
           },
           *context.item);
-      current_read = CurrentRead{.generator = std::move(generator),
-                                 .current_offset = offset,
-                                 .pending = true};
-      current_read->it = co_await current_read->generator.begin();
+      coro::SharedPromise promise([&]() -> Task<> {
+        current_read->it = co_await current_read->generator.begin();
+      });
+      co_await promise.Get(stop_token_or.GetToken());
     } else {
       current_read->pending = true;
     }
@@ -344,7 +353,9 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
     while (static_cast<int64_t>(chunk.size()) < size &&
            *current_read->it != std::end(current_read->generator)) {
       chunk += std::move(**current_read->it);
-      co_await ++*current_read->it;
+      coro::SharedPromise promise(
+          [&]() -> Task<> { co_await ++*current_read->it; });
+      co_await promise.Get(stop_token_or.GetToken());
     }
     current_read->current_offset = offset + size;
     if (static_cast<int64_t>(chunk.size()) > size) {
