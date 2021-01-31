@@ -73,10 +73,10 @@ struct CreateFileVisitor {
   Task<FileContext> operator()(const Directory& parent) {
     using CloudProviderT = typename Item::CloudProviderT;
     if constexpr (IsDirectory<Directory, CloudProviderT> &&
-                  CanCreateFile<Directory, Generator<std::string>,
-                                CloudProviderT>) {
+                  CanCreateFile<Directory, CloudProviderT>) {
       auto new_item = co_await d.provider()->CreateFile(
-          parent, name, std::move(content), size, std::move(stop_token));
+          parent, name, FileContent{.data = std::move(content), .size = size},
+          std::move(stop_token));
       FileContext file_context;
       file_context.item = Item(d.account, std::move(new_item));
       co_return std::move(file_context);
