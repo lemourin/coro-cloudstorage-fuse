@@ -207,8 +207,9 @@ class WinFspContext {
   };
 
   static void ToFileInfo(GenericItem item, FSP_FSCTL_FILE_INFO* info) {
-    info->FileAttributes =
-        item.is_directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    info->FileAttributes = item.type == GenericItem::Type::kDirectory
+                               ? FILE_ATTRIBUTE_DIRECTORY
+                               : FILE_ATTRIBUTE_NORMAL;
     info->FileSize = item.size.value_or(0);
     info->ChangeTime =
         item.timestamp ? 10000000ULL * *item.timestamp + 116444736000000000ULL
@@ -548,8 +549,10 @@ class WinFspContext {
           FileContext parent = co_await context->GetFileContext(
               directory_name, stdx::stop_token());
           co_await context->CreateFile(
-              parent, file_name, ReadFile(file->tmpfile.get()),
-              GetFileSize(file->tmpfile.get()), stdx::stop_token());
+              parent, file_name,
+              FileContent{.data = ReadFile(file->tmpfile.get()),
+                          .size = GetFileSize(file->tmpfile.get())},
+              stdx::stop_token());
           std::cerr << "UPLOADED\n";
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {

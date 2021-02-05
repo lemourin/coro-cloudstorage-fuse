@@ -1,10 +1,11 @@
 #include "filesystem_context.h"
 
+#include <coro/cloudstorage/abstract_cloud_provider.h>
 #include <coro/cloudstorage/cloud_exception.h>
 #include <coro/http/http_server.h>
 #include <coro/util/stop_token_or.h>
 
-namespace coro::cloudstorage::internal {
+namespace coro::cloudstorage {
 
 namespace {
 
@@ -40,97 +41,67 @@ std::vector<T> SplitString(const T& string, C delim) {
   return result;
 }
 
-template <typename FileSystemContext, typename ItemT, typename Directory,
-          typename PageData = typename FileSystemContext::PageData,
-          typename FileContext = typename FileSystemContext::FileContext>
-Task<PageData> GetPage(ItemT d, Directory directory,
-                       std::optional<std::string> page_token,
-                       stdx::stop_token stop_token) {
-  auto page_data = co_await d.provider()->ListDirectoryPage(
-      std::move(directory), std::move(page_token), std::move(stop_token));
-  PageData page{.next_page_token = page_data.next_page_token};
-  for (auto& item : page_data.items) {
-    page.items.emplace_back(
-        FileContext{.item = ItemT(d.account, std::move(item))});
-  }
-  co_return std::move(page);
-}
-
 template <typename FileContext>
 StopTokenOr GetToken(const FileContext& context, stdx::stop_token stop_token) {
   if (!context.item) {
     throw std::invalid_argument("item not associated with any account");
   }
 
-  return StopTokenOr(
-      std::move(stop_token),
-      std::visit([](const auto& d) { return d.stop_token(); }, *context.item));
+  return StopTokenOr(std::move(stop_token), context.item->stop_token());
 }
-
-template <typename FileContext, typename Item>
-struct CreateFileVisitor {
-  template <typename Directory>
-  Task<FileContext> operator()(const Directory& parent) {
-    using CloudProviderT = typename Item::CloudProviderT;
-    if constexpr (IsDirectory<Directory, CloudProviderT> &&
-                  CanCreateFile<Directory, CloudProviderT>) {
-      auto new_item = co_await d.provider()->CreateFile(
-          parent, name, FileContent{.data = std::move(content), .size = size},
-          std::move(stop_token));
-      FileContext file_context;
-      file_context.item = Item(d.account, std::move(new_item));
-      co_return std::move(file_context);
-    } else {
-      throw std::invalid_argument("not supported");
-    }
-  }
-  const Item& d;
-  std::string_view name;
-  Generator<std::string> content;
-  int64_t size;
-  stdx::stop_token stop_token;
-};
 
 }  // namespace
 
-template <typename... T>
-void FileSystemContext<TypeList<T...>>::AccountListener::OnCreate(
-    CloudProviderAccount* d) {
+auto FileSystemContext::Item::provider() const -> AbstractCloudProviderT {
+  auto acc = account.lock();
+  if (!acc) {
+    throw CloudException(CloudException::Type::kNotFound);
+  }
+  return std::visit(
+      [](auto& provider) { return AbstractCloudProviderT(&provider); },
+      acc->provider);
+}
+
+stdx::stop_token FileSystemContext::Item::stop_token() const {
+  auto acc = account.lock();
+  if (!acc) {
+    throw CloudException(CloudException::Type::kNotFound);
+  }
+  return acc->stop_source.get_token();
+}
+
+auto FileSystemContext::Item::GetGenericItem() const -> GenericItem {
+  return AbstractCloudProviderT::ToGenericItem(item);
+}
+
+void FileSystemContext::AccountListener::OnCreate(CloudProviderAccount* d) {
   context->accounts_.insert(
       std::shared_ptr<CloudProviderAccount>(d, [](auto) {}));
   std::cerr << "CREATED " << d->id << "\n";
 }
 
-template <typename... T>
-void FileSystemContext<TypeList<T...>>::AccountListener::OnDestroy(
-    CloudProviderAccount* d) {
+void FileSystemContext::AccountListener::OnDestroy(CloudProviderAccount* d) {
   context->accounts_.erase(
       std::shared_ptr<CloudProviderAccount>(d, [](auto) {}));
   std::cerr << "REMOVED " << d->id << "\n";
 }
 
-template <typename... T>
-FileSystemContext<TypeList<T...>>::FileSystemContext(event_base* event_base)
+FileSystemContext::FileSystemContext(event_base* event_base)
     : event_base_(event_base),
       event_loop_(event_base_),
       http_(http::CurlHttp(event_base)) {
   Invoke(Main());
 }
 
-template <typename... T>
-FileSystemContext<TypeList<T...>>::~FileSystemContext() {
-  Quit();
-}
+FileSystemContext::~FileSystemContext() { Quit(); }
 
-template <typename... T>
-void FileSystemContext<TypeList<T...>>::Cancel() {
+void FileSystemContext::Cancel() {
   for (const auto& account : accounts_) {
     account->stop_source.request_stop();
   }
 }
 
-template <typename... T>
-void FileSystemContext<TypeList<T...>>::Quit() {
+void FileSystemContext::Quit() {
   if (!quit_called_) {
     quit_called_ = true;
     Cancel();
@@ -138,19 +109,16 @@ void FileSystemContext<TypeList<T...>>::Quit() {
   }
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetGenericItem(const FileContext& ctx)
-    -> GenericItem {
+auto FileSystemContext::GetGenericItem(const FileContext& ctx) -> GenericItem {
   if (!ctx.item) {
-    return GenericItem{.name = "root", .is_directory = true};
+    return GenericItem{.name = "root", .type = GenericItem::Type::kDirectory};
   }
-  return std::visit([](const auto& d) { return d.GetGenericItem(); },
-                    *ctx.item);
+  return ctx.item->GetGenericItem();
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetFileContext(
-    std::string path, stdx::stop_token stop_token) const -> Task<FileContext> {
+auto FileSystemContext::GetFileContext(std::string path,
+                                       stdx::stop_token stop_token) const
+    -> Task<FileContext> {
   auto components = SplitString(path, '/');
   if (components.empty()) {
     co_return FileContext{};
@@ -164,37 +132,16 @@ auto FileSystemContext<TypeList<T...>>::GetFileContext(
                             std::move(stop_token));
   co_return co_await std::visit(
       [&](auto& d) -> Task<FileContext> {
-        using CloudProvider = std::remove_cvref_t<decltype(d)>;
         co_return FileContext{
-            .item = Item<CloudProvider>(
-                account, co_await d.GetItemByPath(provider_path,
-                                                  stop_token_or.GetToken()))};
+            .item =
+                Item(account, co_await d.GetItemByPath(
+                                  provider_path, stop_token_or.GetToken()))};
       },
       account->provider);
 }
 
-template <typename... T>
-template <typename D>
-auto FileSystemContext<TypeList<T...>>::GetDirectoryPage::operator()(
-    const D& d) const -> Task<PageData> {
-  return std::visit(
-      [d, page_token = std::move(page_token),
-       stop_token =
-           std::move(stop_token)](const auto& directory) -> Task<PageData> {
-        using CloudProviderT = typename D::CloudProviderT;
-        if constexpr (IsDirectory<decltype(directory), CloudProviderT>) {
-          return GetPage<FileSystemContext>(d, directory, std::move(page_token),
-                                            std::move(stop_token));
-        } else {
-          throw std::invalid_argument("not a directory");
-        }
-      },
-      d.item);
-}
-
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::ReadDirectory(
-    const FileContext& context, stdx::stop_token stop_token) const
+auto FileSystemContext::ReadDirectory(const FileContext& context,
+                                      stdx::stop_token stop_token) const
     -> Generator<std::vector<FileContext>> {
   std::optional<std::string> page_token;
   do {
@@ -205,37 +152,40 @@ auto FileSystemContext<TypeList<T...>>::ReadDirectory(
   } while (page_token);
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::ReadDirectoryPage(
-    const FileContext& context, std::optional<std::string> page_token,
-    stdx::stop_token stop_token) const -> Task<PageData> {
+auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
+                                          std::optional<std::string> page_token,
+                                          stdx::stop_token stop_token) const
+    -> Task<PageData> {
   if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
       auto root = co_await std::visit(
           [&](auto& provider) -> Task<FileContext> {
-            using CloudProviderT = std::remove_cvref_t<decltype(provider)>;
-            FileContext context = {};
-            auto directory = co_await provider.GetRoot(std::move(stop_token));
+            StopTokenOr stop_token_or(stop_token,
+                                      account->stop_source.get_token());
+            auto directory =
+                co_await provider.GetRoot(stop_token_or.GetToken());
             directory.name = account->id;
-            context.item = Item<CloudProviderT>(account, std::move(directory));
-            co_return context;
+            co_return FileContext{.item = Item(account, std::move(directory))};
           },
           account->provider);
       result.emplace_back(std::move(root));
     }
     co_return PageData{.items = std::move(result)};
   }
-
   auto stop_token_or = GetToken(context, std::move(stop_token));
-  co_return co_await std::visit(
-      GetDirectoryPage{std::move(page_token), stop_token_or.GetToken()},
-      *context.item);
+  auto page_data = co_await context.item->provider().ListDirectoryPage(
+      context.item->item, std::move(page_token), stop_token_or.GetToken());
+  PageData result = {.next_page_token = std::move(page_data.next_page_token)};
+  for (auto& item : page_data.items) {
+    result.items.emplace_back(
+        FileContext{.item = Item(context.item->account, std::move(item))});
+  }
+  co_return std::move(result);
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetVolumeData(
-    stdx::stop_token stop_token) const -> Task<VolumeData> {
+auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
+    -> Task<VolumeData> {
   std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
     tasks.emplace_back(std::visit(
@@ -267,10 +217,9 @@ auto FileSystemContext<TypeList<T...>>::GetVolumeData(
   co_return total;
 }
 
-template <typename... T>
-Task<std::string> FileSystemContext<TypeList<T...>>::Read(
-    const FileContext& context, int64_t offset, int64_t size,
-    stdx::stop_token stop_token) const {
+Task<std::string> FileSystemContext::Read(const FileContext& context,
+                                          int64_t offset, int64_t size,
+                                          stdx::stop_token stop_token) const {
   using QueuedRead = typename FileContext::QueuedRead;
 
   if (!context.item) {
@@ -317,31 +266,15 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
       std::cerr << "STARTING READ " << generic_item.name << " " << offset
                 << "\n";
       using CurrentRead = typename FileContext::CurrentRead;
-      current_read = CurrentRead{
-          .current_offset = offset,
-          .pending = true,
-          .stop_token_data =
-              std::make_unique<typename CurrentRead::StopTokenData>(
-                  std::visit([](const auto& d) { return d.stop_token(); },
-                             *context.item))};
-      current_read->generator = std::visit(
-          [&](const auto& d) {
-            using CloudProviderT =
-                typename std::remove_cvref_t<decltype(d)>::CloudProviderT;
-            return std::visit(
-                [&](const auto& item) -> Generator<std::string> {
-                  if constexpr (IsFile<decltype(item), CloudProviderT>) {
-                    return d.provider()->GetFileContent(
-                        item, http::Range{.start = offset},
-                        current_read->stop_token_data->stop_token_or
-                            .GetToken());
-                  } else {
-                    throw std::invalid_argument("not a file");
-                  }
-                },
-                d.item);
-          },
-          *context.item);
+      current_read =
+          CurrentRead{.current_offset = offset,
+                      .pending = true,
+                      .stop_token_data =
+                          std::make_unique<typename CurrentRead::StopTokenData>(
+                              context.item->stop_token())};
+      current_read->generator = context.item->provider().GetFileContent(
+          context.item->item, http::Range{.start = offset},
+          current_read->stop_token_data->stop_token_or.GetToken());
       coro::SharedPromise promise([&]() -> Task<> {
         current_read->it = co_await current_read->generator.begin();
       });
@@ -398,151 +331,76 @@ Task<std::string> FileSystemContext<TypeList<T...>>::Read(
   }
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::Rename(const FileContext& item,
-                                               std::string_view new_name,
-                                               stdx::stop_token stop_token)
+auto FileSystemContext::Rename(const FileContext& context,
+                               std::string_view new_name,
+                               stdx::stop_token stop_token)
     -> Task<FileContext> {
-  if (!item.item) {
+  if (!context.item) {
     throw CloudException("cannot rename root");
   }
 
-  auto stop_token_or = GetToken(item, std::move(stop_token));
-  co_return co_await std::visit(
-      [&http = http_, new_name, stop_token = stop_token_or.GetToken()](
-          auto& p) mutable -> Task<FileContext> {
-        using CloudProviderT =
-            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
-        if constexpr (CanRename<decltype(p.item), CloudProviderT>) {
-          auto item = co_await p.provider()->RenameItem(
-              p.item, std::string(new_name), std::move(stop_token));
-          http.InvalidateCache();
-          co_return FileContext{
-              .item = Item<CloudProviderT>(p.account, std::move(item))};
-        } else {
-          throw std::runtime_error("rename not supported");
-        }
-      },
-      *item.item);
+  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto item = co_await context.item->provider().RenameItem(
+      context.item->item, new_name, stop_token_or.GetToken());
+  http_.InvalidateCache();
+  co_return FileContext{.item = Item(context.item->account, std::move(item))};
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::Move(const FileContext& source,
-                                             const FileContext& destination,
-                                             stdx::stop_token stop_token)
-    -> Task<FileContext> {
+auto FileSystemContext::Move(const FileContext& source,
+                             const FileContext& destination,
+                             stdx::stop_token stop_token) -> Task<FileContext> {
   if (!source.item || !destination.item) {
     throw CloudException("cannot move from / to root");
   }
-  if (source.item->index() != destination.item->index()) {
+  if (source.item->account.lock() != destination.item->account.lock()) {
     throw CloudException("cannot move between different accounts");
   }
   auto stop_token_or = GetToken(source, std::move(stop_token));
-  co_return co_await std::visit(
-      [&destination, &http = http_, stop_token = stop_token_or.GetToken()](
-          auto& source) mutable -> Task<FileContext> {
-        using ItemT = std::remove_cvref_t<decltype(source)>;
-        using CloudProviderT = typename ItemT::CloudProviderT;
-
-        co_return co_await std::visit(
-            [&](auto& destination) mutable -> Task<FileContext> {
-              if constexpr (IsDirectory<decltype(destination),
-                                        CloudProviderT>) {
-                if constexpr (CanMove<decltype(source.item),
-                                      decltype(destination), CloudProviderT>) {
-                  auto item = co_await source.provider()->MoveItem(
-                      std::move(source.item), std::move(destination),
-                      std::move(stop_token));
-                  http.InvalidateCache();
-                  co_return FileContext{.item = Item<CloudProviderT>(
-                                            source.account, std::move(item))};
-                } else {
-                  throw std::runtime_error("move not supported");
-                }
-              } else {
-                throw std::invalid_argument("cannot move into non directory");
-              }
-            },
-            std::get<ItemT>(*destination.item).item);
-      },
-      *source.item);
+  auto item = co_await source.item->provider().MoveItem(
+      source.item->item, destination.item->item, stop_token_or.GetToken());
+  http_.InvalidateCache();
+  co_return FileContext{.item = Item(source.item->account, std::move(item))};
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::CreateDirectory(
-    const FileContext& item, std::string_view name, stdx::stop_token stop_token)
+auto FileSystemContext::CreateDirectory(const FileContext& context,
+                                        std::string_view name,
+                                        stdx::stop_token stop_token)
     -> Task<FileContext> {
-  auto stop_token_or = GetToken(item, std::move(stop_token));
-  co_return co_await std::visit(
-      [&http = http_, name, stop_token = stop_token_or.GetToken()](
-          auto& p) mutable -> Task<FileContext> {
-        using CloudProviderT =
-            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
-        auto new_directory = co_await std::visit(
-            [&](auto& d) -> Task<FileContext> {
-              if constexpr (IsDirectory<decltype(d), CloudProviderT>) {
-                if constexpr (CanCreateDirectory<decltype(d), CloudProviderT>) {
-                  auto new_directory = co_await p.provider()->CreateDirectory(
-                      d, std::string(name), std::move(stop_token));
-                  co_return FileContext{
-                      .item = Item<CloudProviderT>(p.account,
-                                                   std::move(new_directory))};
-                } else {
-                  throw std::runtime_error("createdirectory not supported");
-                }
-              } else {
-                throw std::invalid_argument("parent not a directory");
-              }
-            },
-            p.item);
-        http.InvalidateCache();
-        co_return std::move(new_directory);
-      },
-      *item.item);
+  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto new_directory = co_await context.item->provider().CreateDirectory(
+      context.item->item, name, stop_token_or.GetToken());
+  http_.InvalidateCache();
+  co_return FileContext{
+      .item = Item(context.item->account, std::move(new_directory))};
 }
 
-template <typename... T>
-Task<> FileSystemContext<TypeList<T...>>::Remove(const FileContext& item,
-                                                 stdx::stop_token stop_token) {
-  auto stop_token_or = GetToken(item, std::move(stop_token));
-  co_await std::visit(
-      [&http = http_,
-       stop_token = stop_token_or.GetToken()](auto& p) mutable -> Task<> {
-        using CloudProviderT =
-            typename std::remove_cvref_t<decltype(p)>::CloudProviderT;
-        if constexpr (CanRemove<decltype(p.item), CloudProviderT>) {
-          co_await p.provider()->RemoveItem(p.item, std::move(stop_token));
-          http.InvalidateCache();
-        } else {
-          throw std::runtime_error("remove not supported");
-        }
-      },
-      *item.item);
+Task<> FileSystemContext::Remove(const FileContext& context,
+                                 stdx::stop_token stop_token) {
+  auto stop_token_or = GetToken(context, std::move(stop_token));
+  if (!context.item) {
+    throw CloudException("cannot remove root");
+  }
+  co_await context.item->provider().RemoveItem(context.item->item,
+                                               stop_token_or.GetToken());
+  http_.InvalidateCache();
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::CreateFile(
-    const FileContext& parent, std::string_view name,
-    Generator<std::string> content, int64_t size, stdx::stop_token stop_token)
+auto FileSystemContext::CreateFile(const FileContext& parent,
+                                   std::string_view name, FileContent content,
+                                   stdx::stop_token stop_token)
     -> Task<FileContext> {
   if (!parent.item) {
     throw CloudException("cannot create file directly under root");
   }
   auto stop_token_or = GetToken(parent, std::move(stop_token));
-  auto new_item = co_await std::visit(
-      [&](const auto& d) -> Task<FileContext> {
-        co_return co_await std::visit(
-            CreateFileVisitor<FileContext, std::remove_cvref_t<decltype(d)>>{
-                d, name, std::move(content), size, stop_token_or.GetToken()},
-            d.item);
-      },
-      *parent.item);
+  auto new_item = co_await parent.item->provider().CreateFile(
+      parent.item->item, name, std::move(content), stop_token_or.GetToken());
   http_.InvalidateCache();
-  co_return std::move(new_item);
+  co_return FileContext{.item =
+                            Item(parent.item->account, std::move(new_item))};
 }
 
-template <typename... T>
-auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
+auto FileSystemContext::GetAccount(std::string_view name) const
     -> std::shared_ptr<CloudProviderAccount> {
   auto it = std::find_if(accounts_.begin(), accounts_.end(),
                          [name](auto d) { return d->id == name; });
@@ -553,8 +411,7 @@ auto FileSystemContext<TypeList<T...>>::GetAccount(std::string_view name) const
   }
 }
 
-template <typename... T>
-Task<> FileSystemContext<TypeList<T...>>::Main() {
+Task<> FileSystemContext::Main() {
   CloudFactory cloud_factory(event_loop_, http_);
   http::HttpServer http_server(
       event_base_, {.address = "0.0.0.0", .port = 12345},
@@ -563,6 +420,4 @@ Task<> FileSystemContext<TypeList<T...>>::Main() {
   co_await http_server.Quit();
 }
 
-template class FileSystemContext<CloudProviders>;
-
-}  // namespace coro::cloudstorage::internal
+}  // namespace coro::cloudstorage

@@ -1,6 +1,7 @@
 #ifndef FILESYSTEM_CONTEXT_H
 #define FILESYSTEM_CONTEXT_H
 
+#include <coro/cloudstorage/abstract_cloud_provider.h>
 #include <coro/cloudstorage/cloud_exception.h>
 #include <coro/cloudstorage/cloud_factory.h>
 #include <coro/cloudstorage/cloud_provider.h>
@@ -22,33 +23,22 @@
 
 namespace coro::cloudstorage {
 
-namespace internal {
-
-using CloudProviders =
-    coro::util::TypeList<coro::cloudstorage::GoogleDrive,
-                         coro::cloudstorage::Mega, coro::cloudstorage::OneDrive,
-                         coro::cloudstorage::Dropbox>;
-
-template <typename>
-class FileSystemContext;
-
-template <typename... CloudProvider>
-class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
+class FileSystemContext {
  public:
-  static_assert(
-      std::is_same_v<::coro::util::TypeList<CloudProvider...>, CloudProviders>);
-
   using Http = http::CacheHttp<http::CurlHttp>;
   using EventLoop = ::coro::util::EventLoop;
 
   struct AccountListener;
 
+  using CloudProviders = coro::util::TypeList<
+      coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
+      coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
+  // using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
+
   using AccountManagerHandlerT =
-      util::AccountManagerHandler<::coro::util::TypeList<CloudProvider...>,
-                                  CloudFactory<EventLoop, Http>,
+      util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
                                   AccountListener>;
-  using CloudProviderAccount =
-      typename AccountManagerHandlerT::CloudProviderAccount;
+  using CloudProviderAccount = AccountManagerHandlerT::CloudProviderAccount;
 
   struct AccountListener {
     void OnCreate(CloudProviderAccount*);
@@ -61,68 +51,26 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
     std::optional<int64_t> space_total;
   };
 
-  struct GenericItem {
-    std::string id;
-    std::string name;
-    bool is_directory;
-    std::optional<int64_t> timestamp;
-    std::optional<int64_t> size;
-  };
+  using AbstractCloudProvider = AccountManagerHandlerT::AbstractCloudProvider;
+  using AbstractCloudProviderT = AbstractCloudProvider::CloudProvider;
 
-  template <typename T>
+  using GenericItem = AbstractCloudProvider::GenericItem;
+
   struct Item {
-    using CloudProviderT = T;
-
-    Item(std::weak_ptr<CloudProviderAccount> account, typename T::Item item)
+    Item(std::weak_ptr<CloudProviderAccount> account,
+         AbstractCloudProviderT::Item item)
         : account(std::move(account)), item(std::move(item)) {}
 
-    T* provider() const {
-      auto acc = account.lock();
-      if (!acc) {
-        throw CloudException(CloudException::Type::kNotFound);
-      }
-      return &std::get<T>(acc->provider);
-    }
-
-    stdx::stop_token stop_token() const {
-      auto acc = account.lock();
-      if (!acc) {
-        throw CloudException(CloudException::Type::kNotFound);
-      }
-      return acc->stop_source.get_token();
-    }
-
-    auto GetGenericItem() const {
-      return GenericItem{
-          .id = std::visit(
-              [](const auto& d) {
-                std::stringstream sstream;
-                sstream << d.id;
-                return std::move(sstream).str();
-              },
-              item),
-          .name = std::visit([](const auto& d) { return d.name; }, item),
-          .is_directory = std::visit(
-              [](const auto& d) {
-                return IsDirectory<decltype(d), CloudProviderT>;
-              },
-              item),
-          .timestamp = std::visit(
-              [](const auto& d) { return CloudProviderT::GetTimestamp(d); },
-              item),
-          .size = std::visit(
-              [](const auto& d) { return CloudProviderT::GetSize(d); }, item)};
-    }
+    AbstractCloudProviderT provider() const;
+    stdx::stop_token stop_token() const;
+    GenericItem GetGenericItem() const;
 
     std::weak_ptr<CloudProviderAccount> account;
-    typename T::Item item;
+    AbstractCloudProviderT::Item item;
   };
 
-  template <typename T>
-  using ItemT = Item<typename CloudProviderAccount::template CloudProviderT<T>>;
-
   struct FileContext {
-    std::optional<std::variant<ItemT<CloudProvider>...>> item;
+    std::optional<Item> item;
     struct CurrentRead {
       Generator<std::string> generator;
       std::optional<Generator<std::string>::iterator> it;
@@ -209,8 +157,7 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
                                     std::string_view name, stdx::stop_token);
   Task<> Remove(const FileContext&, stdx::stop_token);
   Task<FileContext> CreateFile(const FileContext& parent, std::string_view name,
-                               Generator<std::string> context, int64_t size,
-                               stdx::stop_token);
+                               FileContent content, stdx::stop_token);
 
   void Quit();
   void Cancel();
@@ -219,13 +166,6 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
   Task<> Main();
 
-  struct GetDirectoryPage {
-    template <typename T>
-    Task<PageData> operator()(const T&) const;
-    std::optional<std::string> page_token;
-    stdx::stop_token stop_token;
-  };
-
   coro::Promise<void> quit_;
   event_base* event_base_;
   coro::util::EventLoop event_loop_;
@@ -233,12 +173,6 @@ class FileSystemContext<::coro::util::TypeList<CloudProvider...>> {
   bool quit_called_ = false;
   Http http_;
 };
-
-extern template class FileSystemContext<CloudProviders>;
-
-}  // namespace internal
-
-using FileSystemContext = internal::FileSystemContext<internal::CloudProviders>;
 
 }  // namespace coro::cloudstorage
 

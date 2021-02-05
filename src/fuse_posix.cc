@@ -181,13 +181,11 @@ constexpr auto CoroutineT =
 fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
                       FileContext file_context) {
   auto generic_item = FileSystemContext::GetGenericItem(file_context);
-  auto item_id =
-      std::visit(
-          [](const auto& item) {
-            return std::to_string(reinterpret_cast<intptr_t>(item.provider()));
-          },
-          *file_context.item) +
-      '#' + generic_item.id;
+  if (!file_context.item) {
+    throw std::invalid_argument("invalid context");
+  }
+  auto item_id = std::to_string(file_context.item->provider().id()) + '#' +
+                 generic_item.id;
   if (auto it = context->inode.find(item_id); it != std::end(context->inode)) {
     context->file_context[it->second] =
         FuseFileContext{.context = std::move(file_context), .parent = parent};
@@ -234,7 +232,10 @@ Generator<std::string> ReadFile(std::FILE* file) {
 
 struct stat ToStat(const FileSystemContext::GenericItem& item) {
   struct stat stat = {};
-  stat.st_mode = (item.is_directory ? S_IFDIR : S_IFREG) | 0644;
+  stat.st_mode = (item.type == FileSystemContext::GenericItem::Type::kDirectory
+                      ? S_IFDIR
+                      : S_IFREG) |
+                 0644;
   stat.st_size = item.size.value_or(0);
   stat.st_mtim.tv_sec = item.timestamp.value_or(0);
   return stat;
@@ -573,8 +574,10 @@ Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     }
     std::cerr << "UPLOADING " << GetFileSize(new_file.tmp_file.get()) << "\n";
     auto item = co_await context->context.CreateFile(
-        parent.context, new_file.name, ReadFile(new_file.tmp_file.get()),
-        GetFileSize(new_file.tmp_file.get()), stop_source.get_token());
+        parent.context, new_file.name,
+        FileContent{.data = ReadFile(new_file.tmp_file.get()),
+                    .size = GetFileSize(new_file.tmp_file.get())},
+        stop_source.get_token());
     CreateNode(context, new_file.parent, std::move(item));
     std::cerr << "UPLOADED\n";
   }
