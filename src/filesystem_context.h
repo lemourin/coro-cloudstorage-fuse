@@ -175,8 +175,6 @@ class FileSystemContext {
   Task<FileContext> CreateDirectory(const FileContext& item,
                                     std::string_view name, stdx::stop_token);
   Task<> Remove(const FileContext&, stdx::stop_token);
-  Task<FileContext> CreateFile(const FileContext& parent, std::string_view name,
-                               FileContent content, stdx::stop_token);
   Task<FileContext> Create(const FileContext& parent, std::string_view name,
                            stdx::stop_token);
   Task<> Write(const FileContext&, std::string_view chunk, int64_t offset,

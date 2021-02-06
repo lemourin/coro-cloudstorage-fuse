@@ -415,21 +415,6 @@ Task<> FileSystemContext::Remove(const FileContext& context,
   http_.InvalidateCache();
 }
 
-auto FileSystemContext::CreateFile(const FileContext& parent,
-                                   std::string_view name, FileContent content,
-                                   stdx::stop_token stop_token)
-    -> Task<FileContext> {
-  if (!parent.item) {
-    throw CloudException("cannot create file directly under root");
-  }
-  auto stop_token_or = GetToken(parent, std::move(stop_token));
-  auto new_item = co_await parent.item->provider().CreateFile(
-      parent.item->item, name, std::move(content), stop_token_or.GetToken());
-  http_.InvalidateCache();
-  co_return FileContext{.item =
-                            Item(parent.item->account, std::move(new_item))};
-}
-
 auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
                                stdx::stop_token) -> Task<FileContext> {
   if (!parent.item) {
