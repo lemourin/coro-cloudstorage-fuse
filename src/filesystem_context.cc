@@ -164,10 +164,17 @@ auto FileSystemContext::GetFileContext(std::string path,
                             std::move(stop_token));
   co_return co_await std::visit(
       [&](auto& d) -> Task<FileContext> {
-        co_return FileContext{
-            .item =
-                Item(account, co_await d.GetItemByPath(
-                                  provider_path, stop_token_or.GetToken()))};
+        auto it = provider_path.find_last_of('/');
+        auto item = Item(account, co_await d.GetItemByPath(
+                                      provider_path, stop_token_or.GetToken()));
+        std::optional<Item> parent;
+        if (it != std::string::npos && it > 0) {
+          parent = Item(account,
+                        co_await d.GetItemByPath(provider_path.substr(0, it),
+                                                 stop_token_or.GetToken()));
+        }
+        co_return FileContext{.item = std::move(item),
+                              .parent = std::move(parent)};
       },
       account->provider);
 }
@@ -211,7 +218,8 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
   PageData result = {.next_page_token = std::move(page_data.next_page_token)};
   for (auto& item : page_data.items) {
     result.items.emplace_back(
-        FileContext{.item = Item(context.item->account, std::move(item))});
+        FileContext{.item = Item(context.item->account, std::move(item)),
+                    .parent = context.item});
   }
   co_return std::move(result);
 }
@@ -371,7 +379,8 @@ auto FileSystemContext::Rename(const FileContext& context,
   auto item = co_await context.item->provider().RenameItem(
       context.item->item, new_name, stop_token_or.GetToken());
   http_.InvalidateCache();
-  co_return FileContext{.item = Item(context.item->account, std::move(item))};
+  co_return FileContext{.item = Item(context.item->account, std::move(item)),
+                        .parent = context.item};
 }
 
 auto FileSystemContext::Move(const FileContext& source,
@@ -387,7 +396,8 @@ auto FileSystemContext::Move(const FileContext& source,
   auto item = co_await source.item->provider().MoveItem(
       source.item->item, destination.item->item, stop_token_or.GetToken());
   http_.InvalidateCache();
-  co_return FileContext{.item = Item(source.item->account, std::move(item))};
+  co_return FileContext{.item = Item(source.item->account, std::move(item)),
+                        .parent = destination.item};
 }
 
 auto FileSystemContext::CreateDirectory(const FileContext& context,
@@ -399,7 +409,8 @@ auto FileSystemContext::CreateDirectory(const FileContext& context,
       context.item->item, name, stop_token_or.GetToken());
   http_.InvalidateCache();
   co_return FileContext{
-      .item = Item(context.item->account, std::move(new_directory))};
+      .item = Item(context.item->account, std::move(new_directory)),
+      .parent = context.item};
 }
 
 Task<> FileSystemContext::Remove(const FileContext& context,
@@ -418,10 +429,10 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
   if (!parent.item) {
     throw CloudException("invalid parent");
   }
-  co_return FileContext{.current_write =
-                            CurrentWrite{.tmpfile = CreateTmpFile(),
-                                         .new_name = std::string(name),
-                                         .parent = *parent.item}};
+  co_return FileContext{
+      .parent = parent.item,
+      .current_write = CurrentWrite{.tmpfile = CreateTmpFile(),
+                                    .new_name = std::string(name)}};
 }
 
 Task<> FileSystemContext::Write(const FileContext& context,
@@ -450,15 +461,14 @@ auto FileSystemContext::Flush(const FileContext& item,
     throw CloudException("invalid flush");
   }
   auto file = item.current_write->tmpfile.get();
-  StopTokenOr stop_token_or(std::move(stop_token),
-                            item.current_write->parent.stop_token());
-  auto new_item = co_await item.current_write->parent.provider().CreateFile(
-      item.current_write->parent.item, item.current_write->new_name,
+  StopTokenOr stop_token_or(std::move(stop_token), item.parent->stop_token());
+  auto new_item = co_await item.parent->provider().CreateFile(
+      item.parent->item, item.current_write->new_name,
       FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
       stop_token_or.GetToken());
   http_.InvalidateCache();
-  co_return FileContext{
-      .item = Item(item.current_write->parent.account, std::move(new_item))};
+  co_return FileContext{.item = Item(item.parent->account, std::move(new_item)),
+                        .parent = item.parent};
 }
 
 auto FileSystemContext::GetAccount(std::string_view name) const

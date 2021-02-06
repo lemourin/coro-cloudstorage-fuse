@@ -103,11 +103,11 @@ class FileSystemContext {
   struct CurrentWrite {
     std::unique_ptr<std::FILE, FileDeleter> tmpfile;
     std::string new_name;
-    Item parent;
   };
 
   struct FileContext {
     std::optional<Item> item;
+    std::optional<Item> parent;
 
     mutable std::optional<CurrentRead> current_read;
     mutable std::vector<QueuedRead*> queued_reads;
