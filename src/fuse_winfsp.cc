@@ -436,14 +436,6 @@ class WinFspContext {
                   << bool(write_to_end_of_file) << " " << offset << " "
                   << length << "\n";
 
-        if (!file->context.current_write) {
-          auto [directory_name, file_name] = SplitPath(file->path);
-          file->context =
-              co_await context->Create(co_await context->GetFileContext(
-                                           directory_name, stdx::stop_token()),
-                                       file_name, stdx::stop_token());
-        }
-
         if (constrained_io) {
           if (offset >= file->size) {
             std::cerr << "OFFSET PAST SIZE " << file->size << "\n";

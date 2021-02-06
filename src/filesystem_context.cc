@@ -1,5 +1,3 @@
-#define __STDC_WANT_LIB_EXT1__ 1
-
 #include "filesystem_context.h"
 
 #include <coro/cloudstorage/abstract_cloud_provider.h>
@@ -53,7 +51,7 @@ StopTokenOr GetToken(const FileSystemContext::FileContext& context,
 
 auto CreateTmpFile() {
   return std::unique_ptr<std::FILE, FileSystemContext::FileDeleter>([] {
-#ifdef __STDC_LIB_EXT1__
+#ifdef _MSC_VER
     std::FILE* file;
     if (tmpfile_s(&file) != 0) {
       throw std::runtime_error("couldn't create tmpfile");
