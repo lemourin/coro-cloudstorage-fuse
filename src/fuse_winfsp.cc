@@ -19,33 +19,6 @@ const int kAllocationUnit = 1;
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 
-struct FileDeleter {
-  void operator()(std::FILE* file) const {
-    if (file) {
-      fclose(file);
-    }
-  }
-};
-
-int64_t GetFileSize(std::FILE* file) {
-  fseek(file, 0, SEEK_END);
-  int64_t size = ftell(file);
-  fseek(file, 0, SEEK_SET);
-  return size;
-}
-
-Generator<std::string> ReadFile(std::FILE* file) {
-  const int kBufferSize = 4096;
-  char buffer[kBufferSize];
-  while (feof(file) == 0) {
-    size_t size = fread(buffer, 1, kBufferSize, file);
-    if (int error = ferror(file)) {
-      throw std::runtime_error("read error");
-    }
-    co_yield std::string(buffer, size);
-  }
-}
-
 std::wstring ToWideString(std::string_view string) {
   int size = MultiByteToWideChar(CP_UTF8, 0, string.data(),
                                  static_cast<int>(string.size()), nullptr, 0);
@@ -127,26 +100,14 @@ void Check(NTSTATUS status) {
   }
 }
 
-auto CreateTmpFile() {
-  return std::unique_ptr<std::FILE, FileDeleter>([] {
-    std::FILE* file;
-    if (tmpfile_s(&file) != 0) {
-      throw std::runtime_error("couldn't create tmpfile");
-    }
-    return file;
-  }());
-}
-
 class WinFspContext {
  public:
   using FileContext = FileSystemContext::FileContext;
   using GenericItem = FileSystemContext::GenericItem;
 
   struct FuseFileContext {
-    std::optional<FileContext> context;
-    std::mutex mutex;
+    FileContext context;
     std::string path;
-    std::unique_ptr<std::FILE, FileDeleter> tmpfile;
     uint64_t size = 0;
   };
 
@@ -302,9 +263,9 @@ class WinFspContext {
         FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
         void* directory_buffer = nullptr;
         std::vector<FileContext> data;
-        FOR_CO_AWAIT(std::vector<FileContext> & page_data,
-                     context->ReadDirectory(file_context->context.value(),
-                                            stdx::stop_token())) {
+        FOR_CO_AWAIT(
+            std::vector<FileContext> & page_data,
+            context->ReadDirectory(file_context->context, stdx::stop_token())) {
           for (auto& item : page_data) {
             data.emplace_back(std::move(item));
           }
@@ -364,8 +325,7 @@ class WinFspContext {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
-        const auto& [directory_name, file_name] =
-            SplitPath(ToUnixPath(filename));
+        auto [directory_name, file_name] = SplitPath(ToUnixPath(filename));
         FileContext parent = co_await context->GetFileContext(
             directory_name, stdx::stop_token());
 
@@ -382,8 +342,9 @@ class WinFspContext {
           *file_info =
               FSP_FSCTL_FILE_INFO{.FileAttributes = FILE_ATTRIBUTE_NORMAL};
           std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.path = ToUnixPath(filename),
-                                  .tmpfile = CreateTmpFile()});
+              new FuseFileContext{.context = co_await context->Create(
+                                      parent, file_name, stdx::stop_token()),
+                                  .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         }
@@ -410,17 +371,9 @@ class WinFspContext {
               << bool(set_allocation_size) << "\n";
     auto file = static_cast<FuseFileContext*>(file_context);
     file->size = new_size;
-    if (file->context) {
-      auto item = FileSystemContext::GetGenericItem(*file->context);
-      item.size = new_size;
-      ToFileInfo(item, info);
-    } else {
-      *info = FSP_FSCTL_FILE_INFO{
-          .FileAttributes = FILE_ATTRIBUTE_NORMAL,
-          .AllocationSize = (new_size + kAllocationUnit - 1) / kAllocationUnit *
-                            kAllocationUnit,
-          .FileSize = new_size};
-    }
+    auto item = FileSystemContext::GetGenericItem(file->context);
+    item.size = new_size;
+    ToFileInfo(item, info);
     return STATUS_SUCCESS;
   }
 
@@ -438,11 +391,8 @@ class WinFspContext {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FuseFileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-    if (!file->context) {
-      return STATUS_END_OF_FILE;
-    }
     if (static_cast<int64_t>(offset) >=
-        FileSystemContext::GetGenericItem(*file->context).size.value_or(0)) {
+        FileSystemContext::GetGenericItem(file->context).size.value_or(0)) {
       return STATUS_END_OF_FILE;
     }
     context->RunOnEventLoop([=]() -> Task<> {
@@ -454,7 +404,7 @@ class WinFspContext {
       response.IoStatus.Information = 0;
       try {
         std::string content = co_await context->Read(
-            file->context.value(), static_cast<int64_t>(offset),
+            file->context, static_cast<int64_t>(offset),
             static_cast<int64_t>(length), stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
@@ -477,47 +427,50 @@ class WinFspContext {
                         UINT64 offset, ULONG length,
                         BOOLEAN write_to_end_of_file, BOOLEAN constrained_io,
                         PULONG bytes_transferred, FSP_FSCTL_FILE_INFO* info) {
+    auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FuseFileContext*>(file_context);
-    std::unique_lock lock(file->mutex);
-    if (!file->tmpfile) {
-      file->tmpfile = CreateTmpFile();
-    }
 
-    std::cerr << "WRITE " << bool(constrained_io) << " "
-              << bool(write_to_end_of_file) << " " << offset << " " << length
-              << "\n";
+    return context->Do([&]() -> Task<NTSTATUS> {
+      try {
+        std::cerr << "WRITE " << bool(constrained_io) << " "
+                  << bool(write_to_end_of_file) << " " << offset << " "
+                  << length << "\n";
 
-    if (fseek(file->tmpfile.get(), static_cast<long>(offset), SEEK_SET) != 0) {
-      std::cerr << "FSEEK FAIL\n";
-      return STATUS_INVALID_DEVICE_REQUEST;
-    }
+        if (!file->context.current_write) {
+          auto [directory_name, file_name] = SplitPath(file->path);
+          file->context =
+              co_await context->Create(co_await context->GetFileContext(
+                                           directory_name, stdx::stop_token()),
+                                       file_name, stdx::stop_token());
+        }
 
-    if (constrained_io) {
-      if (offset >= file->size) {
-        std::cerr << "OFFSET PAST SIZE " << file->size << "\n";
-        return STATUS_SUCCESS;
+        if (constrained_io) {
+          if (offset >= file->size) {
+            std::cerr << "OFFSET PAST SIZE " << file->size << "\n";
+            co_return STATUS_SUCCESS;
+          }
+          length =
+              std::min<ULONG>(length, static_cast<ULONG>(file->size - offset));
+        }
+
+        co_await context->Write(
+            file->context,
+            std::string_view(reinterpret_cast<char*>(buffer), length), offset,
+            stdx::stop_token());
+
+        *bytes_transferred = length;
+        auto item = FileSystemContext::GetGenericItem(file->context);
+        item.size = file->size;
+        ToFileInfo(item, info);
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return ToStatus(e);
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return STATUS_INVALID_DEVICE_REQUEST;
       }
-      length = std::min<ULONG>(length, static_cast<ULONG>(file->size - offset));
-    }
-
-    if (fwrite(buffer, 1, length, file->tmpfile.get()) != length) {
-      std::cerr << "FWRITE FAILED\n";
-      return STATUS_INVALID_DEVICE_REQUEST;
-    }
-
-    *bytes_transferred = length;
-    if (file->context) {
-      auto item = FileSystemContext::GetGenericItem(*file->context);
-      item.size = file->size;
-      ToFileInfo(item, info);
-    } else {
-      *info = FSP_FSCTL_FILE_INFO{
-          .FileAttributes = FILE_ATTRIBUTE_NORMAL,
-          .AllocationSize = (file->size + kAllocationUnit - 1) /
-                            kAllocationUnit * kAllocationUnit,
-          .FileSize = file->size};
-    }
-    return STATUS_SUCCESS;
+    });
   }
 
   static NTSTATUS Flush(FSP_FILE_SYSTEM* fs, PVOID file_context,
@@ -533,26 +486,19 @@ class WinFspContext {
     if (flags & FspCleanupDelete) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
-          co_await context->Remove(file->context.value(), stdx::stop_token());
+          co_await context->Remove(file->context, stdx::stop_token());
           co_return STATUS_SUCCESS;
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+          std::cerr << "DELETE FAILED " << e.what() << "\n";
           co_return STATUS_INVALID_DEVICE_REQUEST;
         }
       });
     }
-    std::unique_lock lock(file->mutex);
-    if (file->tmpfile) {
+    if (file->context.current_write) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
           std::cerr << "UPLOADING " << file->path << "\n";
-          const auto& [directory_name, file_name] = SplitPath(file->path);
-          FileContext parent = co_await context->GetFileContext(
-              directory_name, stdx::stop_token());
-          co_await context->CreateFile(
-              parent, file_name,
-              FileContent{.data = ReadFile(file->tmpfile.get()),
-                          .size = GetFileSize(file->tmpfile.get())},
-              stdx::stop_token());
+          co_await context->Flush(file->context, stdx::stop_token());
           std::cerr << "UPLOADED\n";
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
@@ -580,11 +526,10 @@ class WinFspContext {
             SplitPath(ToUnixPath(new_file_name));
 
         auto source_item = reinterpret_cast<FuseFileContext*>(file_context);
-        FileContext new_item = {.item = source_item->context.value().item};
+        FileContext new_item = {.item = source_item->context.item};
         if (source_file_name != destination_file_name) {
-          new_item = co_await context->Rename(source_item->context.value(),
-                                              destination_file_name,
-                                              stdx::stop_token());
+          new_item = co_await context->Rename(
+              source_item->context, destination_file_name, stdx::stop_token());
         }
         if (source_directory_name != destination_directory_name) {
           source_item->context = co_await context->Move(
@@ -648,7 +593,7 @@ class WinFspContext {
   std::future<void> event_loop_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDeleter> filesystem_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDispatcherDeleter> dispatcher_;
-};
+};  // namespace
 
 }  // namespace
 

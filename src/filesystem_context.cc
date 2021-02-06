@@ -41,13 +41,41 @@ std::vector<T> SplitString(const T& string, C delim) {
   return result;
 }
 
-template <typename FileContext>
-StopTokenOr GetToken(const FileContext& context, stdx::stop_token stop_token) {
+StopTokenOr GetToken(const FileSystemContext::FileContext& context,
+                     stdx::stop_token stop_token) {
   if (!context.item) {
     throw std::invalid_argument("item not associated with any account");
   }
-
   return StopTokenOr(std::move(stop_token), context.item->stop_token());
+}
+
+auto CreateTmpFile() {
+  return std::unique_ptr<std::FILE, FileSystemContext::FileDeleter>([] {
+    std::FILE* file;
+    if (tmpfile_s(&file) != 0) {
+      throw std::runtime_error("couldn't create tmpfile");
+    }
+    return file;
+  }());
+}
+
+int64_t GetFileSize(std::FILE* file) {
+  fseek(file, 0, SEEK_END);
+  int64_t size = ftell(file);
+  fseek(file, 0, SEEK_SET);
+  return size;
+}
+
+Generator<std::string> ReadFile(std::FILE* file) {
+  const int kBufferSize = 4096;
+  char buffer[kBufferSize];
+  while (feof(file) == 0) {
+    size_t size = fread(buffer, 1, kBufferSize, file);
+    if (int error = ferror(file)) {
+      throw std::runtime_error("read error");
+    }
+    co_yield std::string(buffer, size);
+  }
 }
 
 }  // namespace
@@ -220,8 +248,6 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
 Task<std::string> FileSystemContext::Read(const FileContext& context,
                                           int64_t offset, int64_t size,
                                           stdx::stop_token stop_token) const {
-  using QueuedRead = typename FileContext::QueuedRead;
-
   if (!context.item) {
     throw CloudException("not a file");
   }
@@ -265,13 +291,11 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     if (!current_read || current_read->current_offset != offset) {
       std::cerr << "STARTING READ " << generic_item.name << " " << offset
                 << "\n";
-      using CurrentRead = typename FileContext::CurrentRead;
-      current_read =
-          CurrentRead{.current_offset = offset,
-                      .pending = true,
-                      .stop_token_data =
-                          std::make_unique<typename CurrentRead::StopTokenData>(
-                              context.item->stop_token())};
+      current_read = CurrentRead{
+          .current_offset = offset,
+          .pending = true,
+          .stop_token_data =
+              std::make_unique<StopTokenData>(context.item->stop_token())};
       current_read->generator = context.item->provider().GetFileContent(
           context.item->item, http::Range{.start = offset},
           current_read->stop_token_data->stop_token_or.GetToken());
@@ -398,6 +422,54 @@ auto FileSystemContext::CreateFile(const FileContext& parent,
   http_.InvalidateCache();
   co_return FileContext{.item =
                             Item(parent.item->account, std::move(new_item))};
+}
+
+auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
+                               stdx::stop_token) -> Task<FileContext> {
+  if (!parent.item) {
+    throw CloudException("invalid parent");
+  }
+  co_return FileContext{.current_write =
+                            CurrentWrite{.tmpfile = CreateTmpFile(),
+                                         .new_name = std::string(name),
+                                         .parent = *parent.item}};
+}
+
+Task<> FileSystemContext::Write(const FileContext& context,
+                                std::string_view chunk, int64_t offset,
+                                stdx::stop_token) {
+  if (!context.current_write) {
+    throw CloudException("invalid write");
+  }
+
+  auto file = context.current_write->tmpfile.get();
+  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+    throw CloudException("seek fail");
+  }
+
+  if (fwrite(chunk.data(), 1, chunk.size(), file) != chunk.size()) {
+    throw CloudException("write fail");
+  }
+
+  co_return;
+}
+
+auto FileSystemContext::Flush(const FileContext& item,
+                              stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  if (!item.current_write) {
+    throw CloudException("invalid flush");
+  }
+  auto file = item.current_write->tmpfile.get();
+  StopTokenOr stop_token_or(std::move(stop_token),
+                            item.current_write->parent.stop_token());
+  auto new_item = co_await item.current_write->parent.provider().CreateFile(
+      item.current_write->parent.item, item.current_write->new_name,
+      FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
+      stop_token_or.GetToken());
+  http_.InvalidateCache();
+  co_return FileContext{
+      .item = Item(item.current_write->parent.account, std::move(new_item))};
 }
 
 auto FileSystemContext::GetAccount(std::string_view name) const

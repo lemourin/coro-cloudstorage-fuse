@@ -30,10 +30,10 @@ class FileSystemContext {
 
   struct AccountListener;
 
-  using CloudProviders = coro::util::TypeList<
-      coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
-      coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
-  // using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
+  // using CloudProviders = coro::util::TypeList<
+  //    coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
+  //    coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
+  using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
@@ -69,30 +69,49 @@ class FileSystemContext {
     AbstractCloudProviderT::Item item;
   };
 
+  struct FileDeleter {
+    void operator()(std::FILE* file) const {
+      if (file) {
+        fclose(file);
+      }
+    }
+  };
+
+  struct StopTokenData {
+    stdx::stop_source stop_source;
+    ::coro::util::StopTokenOr stop_token_or;
+    StopTokenData(stdx::stop_token root_token)
+        : stop_token_or(std::move(root_token), stop_source.get_token()) {}
+    ~StopTokenData() { stop_source.request_stop(); }
+  };
+
+  struct CurrentRead {
+    Generator<std::string> generator;
+    std::optional<Generator<std::string>::iterator> it;
+    std::string chunk;
+    int64_t current_offset;
+    bool pending;
+    std::unique_ptr<StopTokenData> stop_token_data;
+  };
+
+  struct QueuedRead {
+    Promise<void> awaiter;
+    int64_t offset;
+    int64_t size;
+  };
+
+  struct CurrentWrite {
+    std::unique_ptr<std::FILE, FileDeleter> tmpfile;
+    std::string new_name;
+    Item parent;
+  };
+
   struct FileContext {
     std::optional<Item> item;
-    struct CurrentRead {
-      Generator<std::string> generator;
-      std::optional<Generator<std::string>::iterator> it;
-      std::string chunk;
-      int64_t current_offset;
-      bool pending;
-      struct StopTokenData {
-        stdx::stop_source stop_source;
-        ::coro::util::StopTokenOr stop_token_or;
-        StopTokenData(stdx::stop_token root_token)
-            : stop_token_or(std::move(root_token), stop_source.get_token()) {}
-        ~StopTokenData() { stop_source.request_stop(); }
-      };
-      std::unique_ptr<StopTokenData> stop_token_data;
-    };
-    struct QueuedRead {
-      Promise<void> awaiter;
-      int64_t offset;
-      int64_t size;
-    };
+
     mutable std::optional<CurrentRead> current_read;
     mutable std::vector<QueuedRead*> queued_reads;
+    mutable std::optional<CurrentWrite> current_write;
   };
 
   struct PageData {
@@ -158,6 +177,11 @@ class FileSystemContext {
   Task<> Remove(const FileContext&, stdx::stop_token);
   Task<FileContext> CreateFile(const FileContext& parent, std::string_view name,
                                FileContent content, stdx::stop_token);
+  Task<FileContext> Create(const FileContext& parent, std::string_view name,
+                           stdx::stop_token);
+  Task<> Write(const FileContext&, std::string_view chunk, int64_t offset,
+               stdx::stop_token);
+  Task<FileContext> Flush(const FileContext& item, stdx::stop_token);
 
   void Quit();
   void Cancel();
