@@ -129,6 +129,7 @@ class FileSystemContext {
     Generator<std::string> GetStream();
 
     std::weak_ptr<CloudProviderAccount> account_;
+    std::string name_;
     StopTokenData stop_token_data_;
     bool flushed_ = false;
     Promise<std::string> current_chunk_;

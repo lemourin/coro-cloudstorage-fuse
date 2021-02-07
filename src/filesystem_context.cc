@@ -575,9 +575,10 @@ Task<> FileSystemContext::NewFileRead::operator()() {
 FileSystemContext::CurrentStreamingWrite::CurrentStreamingWrite(
     Item parent, std::string_view name)
     : account_(parent.account),
+      name_(name),
       stop_token_data_(parent.stop_token()),
       create_file_task_(parent.provider().CreateFile(
-          parent.item, name, FileContent{.data = GetStream()},
+          parent.item, name_, FileContent{.data = GetStream()},
           stop_token_data_.stop_token_or.GetToken())) {}
 
 FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
