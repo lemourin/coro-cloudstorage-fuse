@@ -193,10 +193,10 @@ class WinFspContext {
       auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
       std::promise<FileContext> result;
       FileContext data = context->Do([=] {
+        std::wcerr << "OPEN " << filename << "\n";
         return context->GetFileContext(ToUnixPath(filename),
                                        stdx::stop_token());
       });
-      std::wcerr << "OPEN " << filename << "\n";
       ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
       std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
           .context = std::move(data), .path = ToUnixPath(filename)});
@@ -356,19 +356,10 @@ class WinFspContext {
     });
   }
 
-  static NTSTATUS SetBasicInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
-                               UINT32 file_attributes, UINT64 creation_time,
-                               UINT64 last_access_time, UINT64 last_write_time,
-                               UINT64 change_time,
-                               FSP_FSCTL_FILE_INFO* file_info) {
-    return STATUS_SUCCESS;
-  }
-
   static NTSTATUS SetFileSize(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               UINT64 new_size, BOOLEAN set_allocation_size,
                               FSP_FSCTL_FILE_INFO* info) {
-    std::cerr << "SET FILE SIZE " << new_size << " "
-              << bool(set_allocation_size) << "\n";
+    std::cerr << "SETTING FILE SIZE " << new_size << "\n";
     auto file = static_cast<FuseFileContext*>(file_context);
     file->size = new_size;
     auto item = FileSystemContext::GetGenericItem(file->context);
@@ -486,7 +477,7 @@ class WinFspContext {
         }
       });
     }
-    if (file->context.current_write) {
+    if (file->context.current_write || file->context.current_streaming_write) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
           std::cerr << "UPLOADING " << file->path << "\n";
@@ -571,7 +562,7 @@ class WinFspContext {
                                            .Write = Write,
                                            .Flush = Flush,
                                            .GetFileInfo = nullptr,
-                                           .SetBasicInfo = SetBasicInfo,
+                                           .SetBasicInfo = nullptr,
                                            .SetFileSize = SetFileSize,
                                            .CanDelete = CanDelete,
                                            .Rename = Rename,

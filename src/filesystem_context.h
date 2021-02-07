@@ -28,12 +28,16 @@ class FileSystemContext {
   using Http = http::CacheHttp<http::CurlHttp>;
   using EventLoop = ::coro::util::EventLoop;
 
+  struct Config {
+    bool buffered_write;
+  };
+
   struct AccountListener;
 
-  using CloudProviders = coro::util::TypeList<
-      coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
-      coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
-  // using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
+  // using CloudProviders = coro::util::TypeList<
+  //    coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
+  //    coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
+  using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
@@ -100,8 +104,6 @@ class FileSystemContext {
     int64_t size;
   };
 
-  struct CurrentWrite;
-
   struct NewFileRead {
     Task<> operator()();
     Item item;
@@ -116,6 +118,26 @@ class FileSystemContext {
     std::unique_ptr<StopTokenData> stop_token_data;
   };
 
+  class CurrentStreamingWrite {
+   public:
+    CurrentStreamingWrite(Item parent, std::string_view name);
+    ~CurrentStreamingWrite();
+
+    Task<> Write(std::string_view chunk, int64_t offset, stdx::stop_token);
+    Task<Item> Flush(stdx::stop_token);
+
+   private:
+    Generator<std::string> GetStream();
+
+    std::weak_ptr<CloudProviderAccount> account_;
+    StopTokenData stop_token_data_;
+    bool flushed_ = false;
+    Promise<std::string> current_chunk_;
+    Promise<void> done_;
+    int64_t current_offset_ = 0;
+    Task<AbstractCloudProviderT::Item> create_file_task_;
+  };
+
   struct FileContext {
     std::optional<Item> item;
     std::optional<Item> parent;
@@ -123,6 +145,7 @@ class FileSystemContext {
     mutable std::optional<CurrentRead> current_read;
     mutable std::vector<QueuedRead*> queued_reads;
     mutable std::optional<CurrentWrite> current_write;
+    mutable std::unique_ptr<CurrentStreamingWrite> current_streaming_write;
   };
 
   struct PageData {
@@ -130,7 +153,7 @@ class FileSystemContext {
     std::optional<std::string> next_page_token;
   };
 
-  explicit FileSystemContext(event_base*);
+  explicit FileSystemContext(event_base*, Config = {.buffered_write = false});
   ~FileSystemContext();
 
   FileSystemContext(const FileSystemContext&) = delete;
@@ -196,6 +219,14 @@ class FileSystemContext {
   void Cancel();
 
  private:
+  Task<FileContext> CreateBufferedUpload(const FileContext& parent,
+                                         std::string_view name,
+                                         stdx::stop_token);
+  Task<> WriteToBufferedUpload(const FileContext&, std::string_view chunk,
+                               int64_t offset, stdx::stop_token);
+  Task<FileContext> FlushBufferedUpload(const FileContext& item,
+                                        stdx::stop_token);
+
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
   Task<> Main();
 
@@ -205,6 +236,7 @@ class FileSystemContext {
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
   bool quit_called_ = false;
   Http http_;
+  Config config_;
 };
 
 }  // namespace coro::cloudstorage

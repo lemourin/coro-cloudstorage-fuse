@@ -118,10 +118,11 @@ void FileSystemContext::AccountListener::OnDestroy(CloudProviderAccount* d) {
   std::cerr << "REMOVED " << d->id << "\n";
 }
 
-FileSystemContext::FileSystemContext(event_base* event_base)
+FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_base_(event_base),
       event_loop_(event_base_),
-      http_(http::CurlHttp(event_base)) {
+      http_(http::CurlHttp(event_base)),
+      config_(std::move(config)) {
   Invoke(Main());
 }
 
@@ -283,20 +284,15 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
       }
     }
     if (current_read->pending) {
-      struct AwaiterGuard {
-        void operator()() {
-          context->queued_reads.erase(std::find(context->queued_reads.begin(),
-                                                context->queued_reads.end(),
-                                                queued_read));
-        }
-        const FileContext* context;
-        const QueuedRead* queued_read;
-      };
       QueuedRead queued_read{.offset = offset, .size = size};
-      auto awaiter_guard = AtScopeExit(
-          AwaiterGuard{.context = &context, .queued_read = &queued_read});
+      auto awaiter_guard = AtScopeExit([&] {
+        context.queued_reads.erase(std::find(context.queued_reads.begin(),
+                                             context.queued_reads.end(),
+                                             &queued_read));
+      });
       context.queued_reads.emplace_back(&queued_read);
-      co_await queued_read.awaiter;
+      co_await InterruptibleAwait(queued_read.awaiter,
+                                  stop_token_or.GetToken());
     }
   }
   try {
@@ -311,10 +307,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
       current_read->generator = context.item->provider().GetFileContent(
           context.item->item, http::Range{.start = offset},
           current_read->stop_token_data->stop_token_or.GetToken());
-      coro::SharedPromise promise([&]() -> Task<> {
-        current_read->it = co_await current_read->generator.begin();
-      });
-      co_await promise.Get(stop_token_or.GetToken());
+      current_read->it = co_await InterruptibleAwait(
+          current_read->generator.begin(), stop_token_or.GetToken());
     } else {
       current_read->pending = true;
     }
@@ -322,9 +316,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     while (static_cast<int64_t>(chunk.size()) < size &&
            *current_read->it != std::end(current_read->generator)) {
       chunk += std::move(**current_read->it);
-      coro::SharedPromise promise(
-          [&]() -> Task<> { co_await ++*current_read->it; });
-      co_await promise.Get(stop_token_or.GetToken());
+      co_await InterruptibleAwait(++*current_read->it,
+                                  stop_token_or.GetToken());
     }
     current_read->current_offset = offset + size;
     if (static_cast<int64_t>(chunk.size()) > size) {
@@ -425,7 +418,53 @@ Task<> FileSystemContext::Remove(const FileContext& context,
 }
 
 auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
-                               stdx::stop_token) -> Task<FileContext> {
+                               stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  if (config_.buffered_write) {
+    co_return co_await CreateBufferedUpload(parent, name,
+                                            std::move(stop_token));
+  }
+  if (!parent.item) {
+    throw CloudException("invalid parent");
+  }
+  co_return FileContext{
+      .parent = parent.item,
+      .current_streaming_write =
+          std::make_unique<CurrentStreamingWrite>(*parent.item, name)};
+}
+
+Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
+                                int64_t offset, stdx::stop_token stop_token) {
+  if (config_.buffered_write) {
+    co_return co_await WriteToBufferedUpload(item, chunk, offset,
+                                             std::move(stop_token));
+  }
+  if (!item.current_streaming_write) {
+    throw CloudException("streaming write missing");
+  }
+  co_await item.current_streaming_write->Write(chunk, offset,
+                                               std::move(stop_token));
+}
+
+auto FileSystemContext::Flush(const FileContext& item,
+                              stdx::stop_token stop_token)
+    -> Task<FileContext> {
+  if (config_.buffered_write) {
+    co_return co_await FlushBufferedUpload(item, std::move(stop_token));
+  }
+  if (!item.current_streaming_write) {
+    throw CloudException("streaming write missing");
+  }
+  auto new_item =
+      co_await item.current_streaming_write->Flush(std::move(stop_token));
+  http_.InvalidateCache();
+  co_return FileContext{.item = std::move(new_item), .parent = item.parent};
+}
+
+auto FileSystemContext::CreateBufferedUpload(const FileContext& parent,
+                                             std::string_view name,
+                                             stdx::stop_token)
+    -> Task<FileContext> {
   if (!parent.item) {
     throw CloudException("invalid parent");
   }
@@ -435,9 +474,10 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
                                     .new_name = std::string(name)}};
 }
 
-Task<> FileSystemContext::Write(const FileContext& context,
-                                std::string_view chunk, int64_t offset,
-                                stdx::stop_token stop_token) {
+Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
+                                                std::string_view chunk,
+                                                int64_t offset,
+                                                stdx::stop_token stop_token) {
   if (!context.current_write) {
     if (!context.item) {
       throw CloudException("invalid write");
@@ -477,8 +517,8 @@ Task<> FileSystemContext::Write(const FileContext& context,
   co_return;
 }
 
-auto FileSystemContext::Flush(const FileContext& item,
-                              stdx::stop_token stop_token)
+auto FileSystemContext::FlushBufferedUpload(const FileContext& item,
+                                            stdx::stop_token stop_token)
     -> Task<FileContext> {
   if (!item.current_write) {
     throw CloudException("invalid flush");
@@ -529,6 +569,52 @@ Task<> FileSystemContext::NewFileRead::operator()() {
     if (fwrite(chunk.data(), 1, chunk.size(), file) != chunk.size()) {
       throw CloudException("write fail");
     }
+  }
+}
+
+FileSystemContext::CurrentStreamingWrite::CurrentStreamingWrite(
+    Item parent, std::string_view name)
+    : account_(parent.account),
+      stop_token_data_(parent.stop_token()),
+      create_file_task_(parent.provider().CreateFile(
+          parent.item, name, FileContent{.data = GetStream()},
+          stop_token_data_.stop_token_or.GetToken())) {}
+
+FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
+  stop_token_data_.stop_source.request_stop();
+}
+
+Task<> FileSystemContext::CurrentStreamingWrite::Write(
+    std::string_view chunk, int64_t offset, stdx::stop_token stop_token) {
+  if (current_offset_ != offset) {
+    throw CloudException("write out of order");
+  }
+  current_offset_ += chunk.size();
+  current_chunk_.SetValue(std::string(chunk));
+  StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
+                            std::move(stop_token));
+  co_await InterruptibleAwait(done_, stop_token_or.GetToken());
+  done_ = Promise<void>();
+}
+
+auto FileSystemContext::CurrentStreamingWrite::Flush(
+    stdx::stop_token stop_token) -> Task<Item> {
+  flushed_ = true;
+  current_chunk_.SetValue(std::string());
+  StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
+                            std::move(stop_token));
+  co_return Item(account_,
+                 co_await InterruptibleAwait(std::move(create_file_task_),
+                                             stop_token_or.GetToken()));
+}
+
+Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
+  while (!flushed_) {
+    std::string chunk = co_await InterruptibleAwait(
+        current_chunk_, stop_token_data_.stop_token_or.GetToken());
+    current_chunk_ = Promise<std::string>();
+    done_.SetValue();
+    co_yield std::move(chunk);
   }
 }
 
