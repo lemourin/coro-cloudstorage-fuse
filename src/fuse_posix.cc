@@ -245,7 +245,8 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     return;
   }
   fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
-      .context = FileContext{.item = it->second.context.item},
+      .context = FileContext{.item = it->second.context.item,
+                             .parent = it->second.context.parent},
       .parent = it->second.parent,
       .flags = fi->flags});
   if (fuse_reply_open(req, fi) != 0) {
@@ -484,8 +485,8 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-  co_await context->context.Write(file_context->context,
-                                  std::string_view(buf_cstr, size), off,
+  std::string buf(buf_cstr, size);
+  co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
   fuse_reply_write(req, size);
   co_return;

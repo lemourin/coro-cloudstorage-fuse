@@ -454,6 +454,9 @@ Task<> FileSystemContext::Write(const FileContext& context,
                      .new_file_read = SharedPromise(std::move(read)),
                      .stop_token_data = std::move(stop_token_data)};
   }
+  if (!context.parent) {
+    throw CloudException("no parent");
+  }
 
   StopTokenOr stop_token_or(std::move(stop_token),
                             context.parent->stop_token());
