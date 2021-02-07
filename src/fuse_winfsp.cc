@@ -423,10 +423,6 @@ class WinFspContext {
 
     return context->Do([&]() -> Task<NTSTATUS> {
       try {
-        std::cerr << "WRITE " << bool(constrained_io) << " "
-                  << bool(write_to_end_of_file) << " " << offset << " "
-                  << length << "\n";
-
         if (constrained_io) {
           if (offset >= file->size) {
             std::cerr << "OFFSET PAST SIZE " << file->size << "\n";
@@ -435,6 +431,10 @@ class WinFspContext {
           length =
               std::min<ULONG>(length, static_cast<ULONG>(file->size - offset));
         }
+
+        std::cerr << "WRITE " << bool(constrained_io) << " "
+                  << bool(write_to_end_of_file) << " " << offset << " "
+                  << length << "\n";
 
         co_await context->Write(
             file->context,
@@ -445,6 +445,10 @@ class WinFspContext {
         auto item = FileSystemContext::GetGenericItem(file->context);
         item.size = file->size;
         ToFileInfo(item, info);
+
+        std::cerr << "WRITTEN " << offset << " " << length << " " << file->path
+                  << "\n";
+
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
@@ -457,9 +461,12 @@ class WinFspContext {
   }
 
   static NTSTATUS Flush(FSP_FILE_SYSTEM* fs, PVOID file_context,
-                        FSP_FSCTL_FILE_INFO* file_info) {
-    std::cerr << "FLUSH\n";
-    return STATUS_NOT_IMPLEMENTED;
+                        FSP_FSCTL_FILE_INFO* info) {
+    auto file = static_cast<FuseFileContext*>(file_context);
+    auto item = FileSystemContext::GetGenericItem(file->context);
+    item.size = file->size;
+    ToFileInfo(item, info);
+    return STATUS_SUCCESS;
   }
 
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
@@ -576,7 +583,7 @@ class WinFspContext {
   std::future<void> event_loop_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDeleter> filesystem_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDispatcherDeleter> dispatcher_;
-};  // namespace
+};
 
 }  // namespace
 
