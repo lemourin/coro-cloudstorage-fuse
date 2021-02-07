@@ -164,11 +164,11 @@ auto FileSystemContext::GetFileContext(std::string path,
                             std::move(stop_token));
   co_return co_await std::visit(
       [&](auto& d) -> Task<FileContext> {
-        auto it = provider_path.find_last_of('/');
+        auto it = provider_path.find_last_of('/', provider_path.length() - 2);
         auto item = Item(account, co_await d.GetItemByPath(
                                       provider_path, stop_token_or.GetToken()));
         std::optional<Item> parent;
-        if (it != std::string::npos && it > 0) {
+        if (it != std::string::npos) {
           parent = Item(account,
                         co_await d.GetItemByPath(provider_path.substr(0, it),
                                                  stop_token_or.GetToken()));
@@ -437,9 +437,29 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
 
 Task<> FileSystemContext::Write(const FileContext& context,
                                 std::string_view chunk, int64_t offset,
-                                stdx::stop_token) {
+                                stdx::stop_token stop_token) {
   if (!context.current_write) {
-    throw CloudException("invalid write");
+    if (!context.item) {
+      throw CloudException("invalid write");
+    }
+    auto stop_token_data =
+        std::make_unique<StopTokenData>(context.item->stop_token());
+    auto file = CreateTmpFile();
+    NewFileRead read{.item = *context.item,
+                     .file = file.get(),
+                     .stop_token = stop_token_data->stop_token_or.GetToken()};
+    context.current_write =
+        CurrentWrite{.tmpfile = std::move(file),
+                     .new_name = context.item->GetGenericItem().name,
+                     .new_file_read = SharedPromise(std::move(read)),
+                     .stop_token_data = std::move(stop_token_data)};
+  }
+
+  StopTokenOr stop_token_or(std::move(stop_token),
+                            context.parent->stop_token());
+  if (context.current_write->new_file_read) {
+    co_await context.current_write->new_file_read->Get(
+        stop_token_or.GetToken());
   }
 
   auto file = context.current_write->tmpfile.get();
@@ -460,8 +480,16 @@ auto FileSystemContext::Flush(const FileContext& item,
   if (!item.current_write) {
     throw CloudException("invalid flush");
   }
-  auto file = item.current_write->tmpfile.get();
+  if (!item.parent) {
+    throw CloudException("invalid parent");
+  }
+
   StopTokenOr stop_token_or(std::move(stop_token), item.parent->stop_token());
+  if (item.current_write->new_file_read) {
+    co_await item.current_write->new_file_read->Get(stop_token_or.GetToken());
+  }
+
+  auto file = item.current_write->tmpfile.get();
   auto new_item = co_await item.parent->provider().CreateFile(
       item.parent->item, item.current_write->new_name,
       FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
@@ -489,6 +517,16 @@ Task<> FileSystemContext::Main() {
       AccountManagerHandlerT(cloud_factory, AccountListener{this}));
   co_await quit_;
   co_await http_server.Quit();
+}
+
+Task<> FileSystemContext::NewFileRead::operator()() {
+  FOR_CO_AWAIT(std::string & chunk,
+               item.provider().GetFileContent(item.item, http::Range{},
+                                              std::move(stop_token))) {
+    if (fwrite(chunk.data(), 1, chunk.size(), file) != chunk.size()) {
+      throw CloudException("write fail");
+    }
+  }
 }
 
 }  // namespace coro::cloudstorage

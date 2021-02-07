@@ -30,10 +30,10 @@ class FileSystemContext {
 
   struct AccountListener;
 
-  // using CloudProviders = coro::util::TypeList<
-  //    coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
-  //    coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
-  using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
+  using CloudProviders = coro::util::TypeList<
+      coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
+      coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
+  // using CloudProviders = coro::util::TypeList<coro::cloudstorage::Dropbox>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
@@ -100,9 +100,20 @@ class FileSystemContext {
     int64_t size;
   };
 
+  struct CurrentWrite;
+
+  struct NewFileRead {
+    Task<> operator()();
+    Item item;
+    std::FILE* file;
+    stdx::stop_token stop_token;
+  };
+
   struct CurrentWrite {
     std::unique_ptr<std::FILE, FileDeleter> tmpfile;
     std::string new_name;
+    std::optional<SharedPromise<NewFileRead>> new_file_read;
+    std::unique_ptr<StopTokenData> stop_token_data;
   };
 
   struct FileContext {
