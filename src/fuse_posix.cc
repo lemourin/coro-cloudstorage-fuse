@@ -502,7 +502,7 @@ Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (file_context->context.current_write ||
-      file->context.current_streaming_write) {
+      file_context->context.current_streaming_write) {
     std::cerr << "UPLOADING\n";
     auto new_item = co_await context->context.Flush(file_context->context,
                                                     stop_source.get_token());
