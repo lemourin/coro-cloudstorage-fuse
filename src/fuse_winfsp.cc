@@ -428,13 +428,22 @@ class WinFspContext {
                         PULONG bytes_transferred, FSP_FSCTL_FILE_INFO* info) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FuseFileContext*>(file_context);
+    auto hint = FspFileSystemGetOperationContext()->Request->Hint;
 
-    return context->Do([&]() -> Task<NTSTATUS> {
+    context->RunOnEventLoop([=]() mutable -> Task<> {
+      FSP_FSCTL_TRANSACT_RSP response;
+      memset(&response, 0, sizeof(response));
+      response.Size = sizeof(response);
+      response.Kind = FspFsctlTransactWriteKind;
+      response.Hint = hint;
+      response.IoStatus.Information = 0;
       try {
         if (constrained_io) {
           if (offset >= file->size) {
             std::cerr << "OFFSET PAST SIZE " << file->size << "\n";
-            co_return STATUS_SUCCESS;
+            response.IoStatus.Status = STATUS_SUCCESS;
+            FspFileSystemSendResponse(fs, &response);
+            co_return;
           }
           length =
               std::min<ULONG>(length, static_cast<ULONG>(file->size - offset));
@@ -449,23 +458,27 @@ class WinFspContext {
             std::string_view(reinterpret_cast<char*>(buffer), length), offset,
             stdx::stop_token());
 
-        *bytes_transferred = length;
-        auto item = FileSystemContext::GetGenericItem(file->context);
-        item.size = file->size;
-        ToFileInfo(item, info);
-
         std::cerr << "WRITTEN " << offset << " " << length << " " << file->path
                   << "\n";
 
-        co_return STATUS_SUCCESS;
+        auto item = FileSystemContext::GetGenericItem(file->context);
+        item.size = file->size;
+        ToFileInfo(item, &response.Rsp.Write.FileInfo);
+
+        response.IoStatus.Status = STATUS_SUCCESS;
+        response.IoStatus.Information = length;
+        FspFileSystemSendResponse(fs, &response);
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
-        co_return ToStatus(e);
+        response.IoStatus.Status = ToStatus(e);
+        FspFileSystemSendResponse(fs, &response);
       } catch (const std::exception& e) {
         std::cerr << "ERROR " << e.what() << "\n";
-        co_return STATUS_INVALID_DEVICE_REQUEST;
+        response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
+        FspFileSystemSendResponse(fs, &response);
       }
     });
+    return STATUS_PENDING;
   }
 
   static NTSTATUS Flush(FSP_FILE_SYSTEM* fs, PVOID file_context,
