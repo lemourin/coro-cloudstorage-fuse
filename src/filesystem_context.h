@@ -127,8 +127,9 @@ class FileSystemContext {
 
    private:
     Generator<std::string> GetStream();
+    Task<AbstractCloudProviderT::Item> CreateFile();
 
-    std::weak_ptr<CloudProviderAccount> account_;
+    Item parent_;
     std::string name_;
     StopTokenData stop_token_data_;
     bool flushed_ = false;

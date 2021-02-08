@@ -574,12 +574,10 @@ Task<> FileSystemContext::NewFileRead::operator()() {
 
 FileSystemContext::CurrentStreamingWrite::CurrentStreamingWrite(
     Item parent, std::string_view name)
-    : account_(parent.account),
+    : parent_(std::move(parent)),
       name_(name),
-      stop_token_data_(parent.stop_token()),
-      create_file_task_(parent.provider().CreateFile(
-          parent.item, name_, FileContent{.data = GetStream()},
-          stop_token_data_.stop_token_or.GetToken())) {}
+      stop_token_data_(parent_.stop_token()),
+      create_file_task_(CreateFile()) {}
 
 FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
   stop_token_data_.stop_source.request_stop();
@@ -604,9 +602,21 @@ auto FileSystemContext::CurrentStreamingWrite::Flush(
   current_chunk_.SetValue(std::string());
   StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
                             std::move(stop_token));
-  co_return Item(account_,
+  co_return Item(parent_.account,
                  co_await InterruptibleAwait(std::move(create_file_task_),
                                              stop_token_or.GetToken()));
+}
+
+auto FileSystemContext::CurrentStreamingWrite::CreateFile()
+    -> Task<AbstractCloudProviderT::Item> {
+  try {
+    co_return co_await parent_.provider().CreateFile(
+        parent_.item, name_, FileContent{.data = GetStream()},
+        stop_token_data_.stop_token_or.GetToken());
+  } catch (const std::exception& e) {
+    done_.SetException(e);
+    throw e;
+  }
 }
 
 Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
