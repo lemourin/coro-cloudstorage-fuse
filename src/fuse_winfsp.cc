@@ -548,7 +548,7 @@ class WinFspContext {
                                             .SectorsPerAllocationUnit = 1,
                                             .MaxComponentLength = MAX_PATH,
                                             .VolumeSerialNumber = 1,
-                                            .FileInfoTimeout = ~0u,
+                                            .FileInfoTimeout = 1000,
                                             .CaseSensitiveSearch = 1,
                                             .CasePreservedNames = 1,
                                             .UnicodeOnDisk = 1,
