@@ -329,6 +329,14 @@ class WinFspContext {
         FileContext parent = co_await context->GetFileContext(
             directory_name, stdx::stop_token());
 
+        try {
+          co_await context->GetFileContext(ToUnixPath(filename),
+                                           stdx::stop_token());
+          *file_context = nullptr;
+          co_return STATUS_OBJECT_NAME_EXISTS;
+        } catch (const CloudException&) {
+        }
+
         if (create_options & FILE_DIRECTORY_FILE) {
           FileContext new_item(co_await context->CreateDirectory(
               parent, file_name, stdx::stop_token()));
@@ -473,6 +481,9 @@ class WinFspContext {
                       ULONG flags) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FuseFileContext*>(file_context);
+    if (!file) {
+      return;
+    }
     if (flags & FspCleanupDelete) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
