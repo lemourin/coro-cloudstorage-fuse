@@ -613,9 +613,9 @@ auto FileSystemContext::CurrentStreamingWrite::CreateFile()
     co_return co_await parent_.provider().CreateFile(
         parent_.item, name_, FileContent{.data = GetStream()},
         stop_token_data_.stop_token_or.GetToken());
-  } catch (const std::exception& e) {
-    done_.SetException(e);
-    throw e;
+  } catch (...) {
+    done_.SetException(std::current_exception());
+    throw;
   }
 }
 
