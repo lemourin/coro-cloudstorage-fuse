@@ -109,6 +109,7 @@ class WinFspContext {
     FileContext context;
     std::string path;
     uint64_t size = 0;
+    void* directory_buffer = nullptr;
   };
 
   WinFspContext(PWSTR mountpoint)
@@ -193,7 +194,6 @@ class WinFspContext {
       auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
       std::promise<FileContext> result;
       FileContext data = context->Do([=] {
-        std::wcerr << "OPEN " << filename << "\n";
         return context->GetFileContext(ToUnixPath(filename),
                                        stdx::stop_token());
       });
@@ -234,10 +234,13 @@ class WinFspContext {
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
-    context->RunOnEventLoop([context, file_context]() -> Task<> {
-      delete reinterpret_cast<FuseFileContext*>(file_context);
-      co_return;
-    });
+    context->RunOnEventLoop(
+        [context, file_context = reinterpret_cast<FuseFileContext*>(
+                      file_context)]() -> Task<> {
+          FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
+          delete file_context;
+          co_return;
+        });
   }
 
   static NTSTATUS ReadDirectory(FSP_FILE_SYSTEM* fs, PVOID file_context_ptr,
@@ -261,7 +264,6 @@ class WinFspContext {
           FSP_FSCTL_DIR_INFO d;
         } entry_buffer;
         FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
-        void* directory_buffer = nullptr;
         std::vector<FileContext> data;
         FOR_CO_AWAIT(
             std::vector<FileContext> & page_data,
@@ -271,8 +273,8 @@ class WinFspContext {
           }
         }
         NTSTATUS result;
-        if (!FspFileSystemAcquireDirectoryBuffer(&directory_buffer, true,
-                                                 &result)) {
+        if (!FspFileSystemAcquireDirectoryBuffer(
+                &file_context->directory_buffer, marker == nullptr, &result)) {
           response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
           FspFileSystemSendResponse(fs, &response);
           co_return;
@@ -284,7 +286,7 @@ class WinFspContext {
         for (const FileContext& d : data) {
           auto item = FileSystemContext::GetGenericItem(d);
           std::wstring filename = ToWindowsPath(item.name);
-          if (marker && filename < marker) {
+          if (marker && filename <= marker) {
             continue;
           }
           memcpy(entry->FileNameBuf, filename.c_str(),
@@ -294,14 +296,15 @@ class WinFspContext {
           entry->Size =
               FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
               static_cast<UINT16>(filename.length() * sizeof(wchar_t));
-          if (!FspFileSystemFillDirectoryBuffer(&directory_buffer, entry,
-                                                &result)) {
+          if (!FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                                entry, &result)) {
             break;
           }
         }
-        FspFileSystemReleaseDirectoryBuffer(&directory_buffer);
-        FspFileSystemReadDirectoryBuffer(&directory_buffer, marker, buffer,
-                                         buffer_length, &bytes_transferred);
+        FspFileSystemReleaseDirectoryBuffer(&file_context->directory_buffer);
+        FspFileSystemReadDirectoryBuffer(&file_context->directory_buffer,
+                                         marker, buffer, buffer_length,
+                                         &bytes_transferred);
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = bytes_transferred;
         FspFileSystemSendResponse(fs, &response);
@@ -490,6 +493,15 @@ class WinFspContext {
     return STATUS_SUCCESS;
   }
 
+  static NTSTATUS GetFileInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
+                              FSP_FSCTL_FILE_INFO* info) {
+    auto file = static_cast<FuseFileContext*>(file_context);
+    auto item = FileSystemContext::GetGenericItem(file->context);
+    item.size = file->size;
+    ToFileInfo(item, info);
+    return STATUS_SUCCESS;
+  }
+
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
                       ULONG flags) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
@@ -592,7 +604,7 @@ class WinFspContext {
                                            .Read = Read,
                                            .Write = Write,
                                            .Flush = Flush,
-                                           .GetFileInfo = nullptr,
+                                           .GetFileInfo = GetFileInfo,
                                            .SetBasicInfo = nullptr,
                                            .SetFileSize = SetFileSize,
                                            .CanDelete = CanDelete,
