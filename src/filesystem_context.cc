@@ -321,8 +321,9 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     }
     current_read->current_offset = offset + size;
     if (static_cast<int64_t>(chunk.size()) > size) {
-      current_read->chunk = std::string(chunk.begin() + size, chunk.end());
-      chunk.resize(size);
+      current_read->chunk =
+          std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
+      chunk.resize(static_cast<size_t>(size));
     }
     current_read->pending = false;
 
