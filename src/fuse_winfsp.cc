@@ -108,7 +108,7 @@ class WinFspContext {
   struct FuseFileContext {
     FileContext context;
     std::string path;
-    uint64_t size = 0;
+    std::optional<uint64_t> size;
     void* directory_buffer = nullptr;
   };
 
@@ -142,6 +142,7 @@ class WinFspContext {
         dispatcher_([this, mountpoint] {
           Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
+          // FspFileSystemSetDebugLog(filesystem_.get(), -1);
           return filesystem_.get();
         }()) {}
 
@@ -168,14 +169,16 @@ class WinFspContext {
     }
   };
 
+  static int64_t ToWindowsTimestamp(time_t unix_timestamp) {
+    return 10000000ULL * unix_timestamp + 116444736000000000ULL;
+  }
+
   static void ToFileInfo(GenericItem item, FSP_FSCTL_FILE_INFO* info) {
     info->FileAttributes = item.type == GenericItem::Type::kDirectory
                                ? FILE_ATTRIBUTE_DIRECTORY
                                : FILE_ATTRIBUTE_NORMAL;
     info->FileSize = item.size.value_or(0);
-    info->ChangeTime =
-        item.timestamp ? 10000000ULL * *item.timestamp + 116444736000000000ULL
-                       : 0;
+    info->ChangeTime = item.timestamp ? ToWindowsTimestamp(*item.timestamp) : 0;
     info->CreationTime = info->ChangeTime;
     info->LastAccessTime = info->ChangeTime;
     info->LastWriteTime = info->ChangeTime;
@@ -237,8 +240,10 @@ class WinFspContext {
     context->RunOnEventLoop(
         [context, file_context = reinterpret_cast<FuseFileContext*>(
                       file_context)]() -> Task<> {
-          FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
-          delete file_context;
+          if (file_context) {
+            FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
+            delete file_context;
+          }
           co_return;
         });
   }
@@ -370,7 +375,6 @@ class WinFspContext {
   static NTSTATUS SetFileSize(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               UINT64 new_size, BOOLEAN set_allocation_size,
                               FSP_FSCTL_FILE_INFO* info) {
-    std::cerr << "SETTING FILE SIZE " << new_size << "\n";
     auto file = static_cast<FuseFileContext*>(file_context);
     file->size = new_size;
     auto item = FileSystemContext::GetGenericItem(file->context);
@@ -409,6 +413,7 @@ class WinFspContext {
             file->context, static_cast<int64_t>(offset),
             static_cast<int64_t>(length), stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
+        *bytes_transferred = content.size();
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
         FspFileSystemSendResponse(fs, &response);
@@ -441,15 +446,14 @@ class WinFspContext {
       response.Hint = hint;
       response.IoStatus.Information = 0;
       try {
+        auto size = file->size.value();
         if (constrained_io) {
-          if (offset >= file->size) {
-            std::cerr << "OFFSET PAST SIZE " << file->size << "\n";
+          if (offset >= size) {
             response.IoStatus.Status = STATUS_SUCCESS;
             FspFileSystemSendResponse(fs, &response);
             co_return;
           }
-          length =
-              std::min<ULONG>(length, static_cast<ULONG>(file->size - offset));
+          length = std::min<ULONG>(length, static_cast<ULONG>(size - offset));
         }
 
         std::cerr << "WRITE " << bool(constrained_io) << " "
@@ -465,7 +469,7 @@ class WinFspContext {
                   << "\n";
 
         auto item = FileSystemContext::GetGenericItem(file->context);
-        item.size = file->size;
+        item.size = size;
         ToFileInfo(item, &response.Rsp.Write.FileInfo);
 
         response.IoStatus.Status = STATUS_SUCCESS;
@@ -488,7 +492,7 @@ class WinFspContext {
                         FSP_FSCTL_FILE_INFO* info) {
     auto file = static_cast<FuseFileContext*>(file_context);
     auto item = FileSystemContext::GetGenericItem(file->context);
-    item.size = file->size;
+    item.size = file->size.value_or(item.size.value_or(0));
     ToFileInfo(item, info);
     return STATUS_SUCCESS;
   }
@@ -497,7 +501,7 @@ class WinFspContext {
                               FSP_FSCTL_FILE_INFO* info) {
     auto file = static_cast<FuseFileContext*>(file_context);
     auto item = FileSystemContext::GetGenericItem(file->context);
-    item.size = file->size;
+    item.size = file->size.value_or(item.size.value_or(0));
     ToFileInfo(item, info);
     return STATUS_SUCCESS;
   }

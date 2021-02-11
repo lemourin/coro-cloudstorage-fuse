@@ -219,6 +219,8 @@ class FileSystemContext {
   void Quit();
   void Cancel();
 
+  auto Wait(int ms) const { return event_loop_.Wait(ms); }
+
  private:
   Task<FileContext> CreateBufferedUpload(const FileContext& parent,
                                          std::string_view name,
