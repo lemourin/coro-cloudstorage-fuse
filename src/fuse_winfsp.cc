@@ -142,7 +142,6 @@ class WinFspContext {
         dispatcher_([this, mountpoint] {
           Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
-          // FspFileSystemSetDebugLog(filesystem_.get(), -1);
           return filesystem_.get();
         }()) {}
 
@@ -206,8 +205,10 @@ class WinFspContext {
       *file_context = fuse_file_context.release();
       return STATUS_SUCCESS;
     } catch (const CloudException& e) {
+      std::cerr << "ERROR " << e.what() << " " << ToUnixPath(filename) << "\n";
       return ToStatus(e);
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+      std::cerr << "ERROR " << e.what() << "\n";
       return STATUS_INVALID_DEVICE_REQUEST;
     }
   }
@@ -229,8 +230,10 @@ class WinFspContext {
 
       return STATUS_SUCCESS;
     } catch (const CloudException& e) {
+      std::cerr << "ERROR " << e.what() << "\n";
       return ToStatus(e);
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+      std::cerr << "ERROR " << e.what() << "\n";
       return STATUS_INVALID_DEVICE_REQUEST;
     }
   }
@@ -316,9 +319,11 @@ class WinFspContext {
       } catch (const CloudException& e) {
         response.IoStatus.Status = ToStatus(e);
         FspFileSystemSendResponse(fs, &response);
-      } catch (const std::exception&) {
+        std::cerr << "ERROR " << e.what() << "\n";
+      } catch (const std::exception& e) {
         response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
         FspFileSystemSendResponse(fs, &response);
+        std::cerr << "ERROR " << e.what() << "\n";
       }
     });
     return STATUS_PENDING;
@@ -365,8 +370,10 @@ class WinFspContext {
           co_return STATUS_SUCCESS;
         }
       } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         co_return ToStatus(e);
-      } catch (const std::exception&) {
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         co_return STATUS_INVALID_DEVICE_REQUEST;
       }
     });
@@ -388,7 +395,6 @@ class WinFspContext {
                             BOOLEAN replace_file_attributes,
                             UINT64 allocation_size,
                             FSP_FSCTL_FILE_INFO* file_info) {
-    std::cerr << "OVERWRITE!\n";
     return STATUS_NOT_IMPLEMENTED;
   }
 
@@ -456,17 +462,10 @@ class WinFspContext {
           length = std::min<ULONG>(length, static_cast<ULONG>(size - offset));
         }
 
-        std::cerr << "WRITE " << bool(constrained_io) << " "
-                  << bool(write_to_end_of_file) << " " << offset << " "
-                  << length << "\n";
-
         co_await context->Write(
             file->context,
             std::string_view(reinterpret_cast<char*>(buffer), length), offset,
             stdx::stop_token());
-
-        std::cerr << "WRITTEN " << offset << " " << length << " " << file->path
-                  << "\n";
 
         auto item = FileSystemContext::GetGenericItem(file->context);
         item.size = size;
@@ -519,7 +518,7 @@ class WinFspContext {
           co_await context->Remove(file->context, stdx::stop_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
-          std::cerr << "DELETE FAILED " << e.what() << "\n";
+          std::cerr << "ERROR " << e.what() << "\n";
           co_return STATUS_INVALID_DEVICE_REQUEST;
         }
       });
@@ -527,9 +526,7 @@ class WinFspContext {
     if (file->context.current_write || file->context.current_streaming_write) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
-          std::cerr << "UPLOADING " << file->path << "\n";
           co_await context->Flush(file->context, stdx::stop_token());
-          std::cerr << "UPLOADED\n";
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
           std::cerr << "ERROR " << e.what() << "\n";
@@ -571,8 +568,10 @@ class WinFspContext {
 
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         co_return ToStatus(e);
-      } catch (const std::exception&) {
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
         co_return STATUS_INVALID_DEVICE_REQUEST;
       }
     });
