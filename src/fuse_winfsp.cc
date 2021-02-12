@@ -396,7 +396,25 @@ class WinFspContext {
                             BOOLEAN replace_file_attributes,
                             UINT64 allocation_size,
                             FSP_FSCTL_FILE_INFO* file_info) {
-    return STATUS_NOT_IMPLEMENTED;
+    auto context = static_cast<FileSystemContext*>(fs->UserContext);
+    auto file = static_cast<FuseFileContext*>(file_context);
+    return context->Do([&]() -> Task<NTSTATUS> {
+      try {
+        auto [directory_name, file_name] = SplitPath(file->path);
+        co_await context->Flush(
+            co_await context->Create(co_await context->GetFileContext(
+                                         directory_name, stdx::stop_token()),
+                                     file_name, stdx::stop_token()),
+            stdx::stop_token());
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return ToStatus(e);
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return STATUS_INVALID_DEVICE_REQUEST;
+      }
+    });
   }
 
   static NTSTATUS Read(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID buffer,
