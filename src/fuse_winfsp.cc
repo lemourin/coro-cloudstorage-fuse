@@ -365,7 +365,8 @@ class WinFspContext {
           std::unique_ptr<FuseFileContext> fuse_file_context(
               new FuseFileContext{.context = co_await context->Create(
                                       parent, file_name, stdx::stop_token()),
-                                  .path = ToUnixPath(filename)});
+                                  .path = ToUnixPath(filename),
+                                  .size = 0});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         }
