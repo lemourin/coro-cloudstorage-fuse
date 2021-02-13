@@ -116,7 +116,9 @@ struct Coroutine<F, coro::util::TypeList<fuse_req_t, Args...>> {
       try {
         co_await F(req, args...);
       } catch (const CloudException& e) {
-        std::cerr << "ERROR: " << e.what() << "\n";
+        if (e.type() != CloudException::Type::kNotFound) {
+          std::cerr << "ERROR:  " << e.what() << "\n";
+        }
         fuse_reply_err(req, ToPosixError(e));
       } catch (const InterruptedException&) {
         fuse_reply_err(req, ECANCELED);
