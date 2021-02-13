@@ -401,7 +401,7 @@ class WinFspContext {
     return context->Do([&]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(file->path);
-        co_await context->Flush(
+        file->context = co_await context->Flush(
             co_await context->Create(co_await context->GetFileContext(
                                          directory_name, stdx::stop_token()),
                                      file_name, stdx::stop_token()),

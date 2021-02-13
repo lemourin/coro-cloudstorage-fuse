@@ -441,7 +441,12 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
                                              std::move(stop_token));
   }
   if (!item.current_streaming_write) {
-    throw CloudException("streaming write missing");
+    if (item.item && item.item->GetGenericItem().size == 0 && item.parent) {
+      item.current_streaming_write = std::make_unique<CurrentStreamingWrite>(
+          *item.parent, item.item->GetGenericItem().name);
+    } else {
+      throw CloudException("streaming write missing");
+    }
   }
   co_await item.current_streaming_write->Write(chunk, offset,
                                                std::move(stop_token));
