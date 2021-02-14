@@ -242,7 +242,6 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it = context->file_context.find(ino);
   if (it == context->file_context.end()) {
-    std::cerr << "OPEN " << ino << " FAILED\n";
     fuse_reply_err(req, ENOENT);
     return;
   }
@@ -505,13 +504,11 @@ Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (file_context->context.current_write ||
       file_context->context.current_streaming_write) {
-    std::cerr << "UPLOADING\n";
     auto new_item = co_await context->context.Flush(file_context->context,
                                                     stop_source.get_token());
     context->inode.emplace(GetItemId(new_item), ino);
     context->file_context[ino] = FuseFileContext{
         .context = std::move(new_item), .parent = file_context->parent};
-    std::cerr << "UPLOADED\n";
   }
   fuse_reply_err(req, 0);
   co_return;

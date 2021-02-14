@@ -591,6 +591,9 @@ FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
 
 Task<> FileSystemContext::CurrentStreamingWrite::Write(
     std::string_view chunk, int64_t offset, stdx::stop_token stop_token) {
+  if (flushed_) {
+    throw CloudException("write after flush");
+  }
   if (current_offset_ != offset) {
     throw CloudException("write out of order");
   }
@@ -604,6 +607,9 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
 
 auto FileSystemContext::CurrentStreamingWrite::Flush(
     stdx::stop_token stop_token) -> Task<Item> {
+  if (flushed_) {
+    throw CloudException("flush already called");
+  }
   flushed_ = true;
   current_chunk_.SetValue(std::string());
   StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
