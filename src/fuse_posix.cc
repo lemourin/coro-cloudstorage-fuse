@@ -2,10 +2,10 @@
 
 #define FUSE_USE_VERSION 39
 #include <coro/util/function_traits.h>
+#include <coro/util/raii_utils.h>
 #include <fuse.h>
 #include <fuse_lowlevel.h>
 
-#include <cfloat>
 #include <csignal>
 #include <iostream>
 
@@ -14,6 +14,8 @@
 namespace coro::cloudstorage::fuse {
 
 namespace {
+
+using ::coro::util::AtScopeExit;
 
 using FileContext = FileSystemContext::FileContext;
 
@@ -43,8 +45,8 @@ struct FuseFileContext {
 };
 
 struct FuseContext {
-  std::unordered_map<int64_t, FuseFileContext> file_context;
-  std::unordered_map<std::string, int64_t> inode;
+  std::unordered_map<fuse_ino_t, FuseFileContext> file_context;
+  std::unordered_map<std::string, fuse_ino_t> inode;
   FileSystemContext context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
@@ -72,16 +74,6 @@ struct FreeDeleter {
     free(d);
   }
 };
-
-template <typename T>
-auto AtScopeExit(T func) {
-  struct Guard {
-    Guard(T func) : func(std::move(func)) {}
-    ~Guard() { func(); }
-    T func;
-  };
-  return Guard(std::move(func));
-}
 
 void Check(int d) {
   if (d != 0) {
@@ -146,8 +138,7 @@ fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
   }
   auto item_id = GetItemId(file_context);
   if (auto it = context->inode.find(item_id); it != std::end(context->inode)) {
-    context->file_context[it->second] =
-        FuseFileContext{.context = std::move(file_context), .parent = parent};
+    context->file_context[it->second].context = std::move(file_context);
     return it->second;
   } else {
     context->inode.emplace(item_id, context->next_inode);
@@ -168,25 +159,6 @@ Task<FileContext> FindFile(FuseContext* context, const FileContext& parent,
     }
   }
   throw CloudException(CloudException::Type::kNotFound);
-}
-
-int64_t GetFileSize(std::FILE* file) {
-  fseek(file, 0, SEEK_END);
-  int64_t size = ftell(file);
-  fseek(file, 0, SEEK_SET);
-  return size;
-}
-
-Generator<std::string> ReadFile(std::FILE* file) {
-  const int kBufferSize = 4096;
-  char buffer[kBufferSize];
-  while (feof(file) == 0) {
-    size_t size = fread(buffer, 1, kBufferSize, file);
-    if (int error = ferror(file)) {
-      throw std::runtime_error("read error");
-    }
-    co_yield std::string(buffer, size);
-  }
 }
 
 struct stat ToStat(const FileSystemContext::GenericItem& item) {
@@ -238,6 +210,39 @@ void GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
 
+Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
+               fuse_file_info* fi) {
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto it = context->file_context.find(ino);
+  if (it == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    co_return;
+  }
+  auto* file_context =
+      fi ? reinterpret_cast<FuseFileContext*>(fi->fh) : &it->second;
+  auto item = FileSystemContext::GetGenericItem(file_context->context);
+  struct stat stat = ToStat(item);
+  if (to_set & FUSE_SET_ATTR_SIZE) {
+    if (attr->st_size == 0) {
+      auto parent_it = context->file_context.find(file_context->parent);
+      if (parent_it == context->file_context.end()) {
+        fuse_reply_err(req, ENOENT);
+        co_return;
+      }
+      stdx::stop_source stop_source;
+      fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+      file_context->context = co_await context->context.Flush(
+          co_await context->context.Create(parent_it->second.context, item.name,
+                                           stop_source.get_token()),
+          stop_source.get_token());
+      if (fi) {
+        it->second.context.item = file_context->context.item;
+      }
+    }
+  }
+  fuse_reply_attr(req, &stat, kMetadataTimeout);
+}
+
 void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it = context->file_context.find(ino);
@@ -260,11 +265,23 @@ void OpenDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
 }
 
 Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
-  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   std::unique_ptr<FuseFileContext> file_context(
       reinterpret_cast<FuseFileContext*>(fi->fh));
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  if (!(file_context->flags & (O_RDWR | O_WRONLY))) {
+    fuse_reply_err(req, 0);
+    co_return;
+  }
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  if (file_context->context.current_write ||
+      file_context->context.current_streaming_write) {
+    auto new_item = co_await context->context.Flush(file_context->context,
+                                                    stop_source.get_token());
+    context->inode.emplace(GetItemId(new_item), ino);
+    context->file_context[ino].context = std::move(new_item);
+  }
   fuse_reply_err(req, 0);
-  co_return;
 }
 
 Task<> ReleaseDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
@@ -379,7 +396,6 @@ Task<> Read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     co_return;
   }
   auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
-  auto item = FileSystemContext::GetGenericItem(file_context->context);
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   auto data = co_await context->context.Read(file_context->context, off, size,
@@ -424,12 +440,12 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   if (auto it = context->inode.find(previous_id);
       it != std::end(context->inode)) {
     auto inode = it->second;
-    context->file_context.erase(it->second);
     context->inode.erase(it);
     context->inode.emplace(FileSystemContext::GetGenericItem(new_item).id,
                            inode);
-    context->file_context.emplace(
-        inode, FuseFileContext{.context = std::move(new_item)});
+    auto& file_context = context->file_context[inode];
+    file_context.context = std::move(new_item);
+    file_context.parent = parent;
   }
   fuse_reply_err(req, 0);
 }
@@ -470,14 +486,22 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
   entry.entry_timeout = kMetadataTimeout;
   entry.generation = 1;
   entry.ino = entry.attr.st_ino;
-  fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
+  std::unique_ptr<FuseFileContext> file_context(new FuseFileContext{
       .context = co_await context->context.Create(
           parent_it->second.context, std::string_view(name, strlen(name)),
           stop_source.get_token()),
       .parent = parent,
       .flags = fi->flags});
-  fuse_reply_create(req, &entry, fi);
-  co_return;
+  context->file_context.emplace(
+      entry.ino,
+      FuseFileContext{.context = {.item = file_context->context.item,
+                                  .parent = file_context->context.parent},
+                      .parent = file_context->parent,
+                      .flags = file_context->flags});
+  fi->fh = reinterpret_cast<uint64_t>(file_context.release());
+  if (fuse_reply_create(req, &entry, fi) != 0) {
+    delete reinterpret_cast<FuseFileContext*>(fi->fh);
+  }
 }
 
 Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
@@ -490,27 +514,6 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
   fuse_reply_write(req, size);
-  co_return;
-}
-
-Task<> Flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
-  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
-  auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
-  if (!(file_context->flags & (O_RDWR | O_WRONLY))) {
-    fuse_reply_err(req, 0);
-    co_return;
-  }
-  stdx::stop_source stop_source;
-  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-  if (file_context->context.current_write ||
-      file_context->context.current_streaming_write) {
-    auto new_item = co_await context->context.Flush(file_context->context,
-                                                    stop_source.get_token());
-    context->inode.emplace(GetItemId(new_item), ino);
-    context->file_context[ino] = FuseFileContext{
-        .context = std::move(new_item), .parent = file_context->parent};
-  }
-  fuse_reply_err(req, 0);
   co_return;
 }
 
@@ -569,6 +572,7 @@ int Run(int argc, char** argv) {
                                   .lookup = CoroutineT<Lookup>,
                                   .forget = Forget,
                                   .getattr = GetAttr,
+                                  .setattr = CoroutineT<SetAttr>,
                                   .mkdir = CoroutineT<MkDir>,
                                   .unlink = CoroutineT<Unlink>,
                                   .rmdir = CoroutineT<Unlink>,
@@ -576,7 +580,6 @@ int Run(int argc, char** argv) {
                                   .open = Open,
                                   .read = CoroutineT<Read>,
                                   .write = CoroutineT<Write>,
-                                  .flush = CoroutineT<Flush>,
                                   .release = CoroutineT<Release>,
                                   .opendir = OpenDir,
                                   .releasedir = CoroutineT<ReleaseDir>,
