@@ -36,12 +36,26 @@ off_t EncodeReadDirToken(ReadDirToken token) {
   return (token.page_index << kIndexWidth) | token.offset;
 }
 
+struct Flush {
+  struct Callback {
+    Task<> operator()() const { co_await* done; }
+    Promise<void>* done;
+  };
+
+  Flush() : promise(Callback{.done = &done}) {}
+
+  int pending_count = 0;
+  Promise<void> done;
+  SharedPromise<Callback> promise;
+};
+
 struct FuseFileContext {
   FileContext context;
   fuse_ino_t parent;
   int flags;
   int64_t refcount;
   std::vector<std::string> page_token = {""};
+  std::unique_ptr<Flush> flush;
 };
 
 struct FuseContext {
@@ -148,10 +162,14 @@ fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
   }
 }
 
-Task<FileContext> FindFile(FuseContext* context, const FileContext& parent,
+Task<FileContext> FindFile(FuseContext* context, const FuseFileContext& parent,
                            std::string_view name, stdx::stop_token stop_token) {
-  FOR_CO_AWAIT(std::vector<FileContext> & page,
-               context->context.ReadDirectory(parent, std::move(stop_token))) {
+  if (parent.flush) {
+    co_await parent.flush->promise.Get(stop_token);
+  }
+  FOR_CO_AWAIT(
+      std::vector<FileContext> & page,
+      context->context.ReadDirectory(parent.context, std::move(stop_token))) {
     for (FileContext& file_context : page) {
       if (name == FileSystemContext::GetGenericItem(file_context).name) {
         co_return std::move(file_context);
@@ -276,6 +294,22 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (file_context->context.current_write ||
       file_context->context.current_streaming_write) {
+    auto parent_it = context->file_context.find(file_context->parent);
+    auto guard = AtScopeExit([&] {
+      if (parent_it != std::end(context->file_context)) {
+        parent_it->second.flush->pending_count--;
+        if (parent_it->second.flush->pending_count == 0) {
+          parent_it->second.flush->done.SetValue();
+          parent_it->second.flush = nullptr;
+        }
+      }
+    });
+    if (parent_it != std::end(context->file_context)) {
+      if (!parent_it->second.flush) {
+        parent_it->second.flush = std::make_unique<Flush>();
+      }
+      parent_it->second.flush->pending_count++;
+    }
     auto new_item = co_await context->context.Flush(file_context->context,
                                                     stop_source.get_token());
     context->inode.emplace(GetItemId(new_item), ino);
@@ -312,6 +346,9 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   int current_index = 0;
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  if (it->second.flush) {
+    co_await it->second.flush->promise.Get(stop_source.get_token());
+  }
   auto page = co_await context->context.ReadDirectoryPage(
       file_context.context,
       read_dir_token.page_index == 0
@@ -365,8 +402,8 @@ Task<> Lookup(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   std::string name = name_c_str;
-  auto entry = co_await FindFile(context, file_context.context, name,
-                                 stop_source.get_token());
+  auto entry =
+      co_await FindFile(context, file_context, name, stop_source.get_token());
   fuse_entry_param fuse_entry =
       CreateFuseEntry(context, parent, std::move(entry));
   fuse_reply_entry(req, &fuse_entry);
@@ -417,7 +454,7 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   std::string new_name = new_name_c_str;
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-  auto source_item = co_await FindFile(context, it_parent->second.context, name,
+  auto source_item = co_await FindFile(context, it_parent->second, name,
                                        stop_source.get_token());
   std::string previous_id = FileSystemContext::GetGenericItem(source_item).id;
 
@@ -528,8 +565,8 @@ Task<> Unlink(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
 
   std::string name = name_c_str;
-  auto item = co_await FindFile(context, it->second.context, name,
-                                stop_source.get_token());
+  auto item =
+      co_await FindFile(context, it->second, name, stop_source.get_token());
   co_await context->context.Remove(item, stop_source.get_token());
   fuse_reply_err(req, 0);
 }
