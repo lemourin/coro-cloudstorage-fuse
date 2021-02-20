@@ -261,12 +261,17 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
 
-void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
+Task<> Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it = context->file_context.find(ino);
   if (it == context->file_context.end()) {
     fuse_reply_err(req, ENOENT);
-    return;
+    co_return;
+  }
+  if (it->second.flush) {
+    stdx::stop_source stop_source;
+    fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+    co_await it->second.flush->promise.Get(stop_source.get_token());
   }
   fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
       .context = FileContext{.item = it->second.context.item,
@@ -278,8 +283,8 @@ void Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   }
 }
 
-void OpenDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
-  Open(req, ino, fi);
+Task<> OpenDir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
+  return Open(req, ino, fi);
 }
 
 Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
@@ -294,6 +299,11 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (file_context->context.current_write ||
       file_context->context.current_streaming_write) {
+    auto it = context->file_context.find(ino);
+    if (it == std::end(context->file_context)) {
+      fuse_reply_err(req, ENOENT);
+      co_return;
+    }
     auto parent_it = context->file_context.find(file_context->parent);
     auto guard = AtScopeExit([&] {
       if (parent_it != std::end(context->file_context)) {
@@ -310,10 +320,16 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
       }
       parent_it->second.flush->pending_count++;
     }
-    auto new_item = co_await context->context.Flush(file_context->context,
-                                                    stop_source.get_token());
-    context->inode.emplace(GetItemId(new_item), ino);
-    context->file_context[ino].context = std::move(new_item);
+    it->second.flush = std::make_unique<Flush>();
+    try {
+      auto new_item = co_await context->context.Flush(file_context->context,
+                                                      stop_source.get_token());
+      context->inode.emplace(GetItemId(new_item), ino);
+      it->second.context = std::move(new_item);
+      it->second.flush->done.SetValue();
+    } catch (...) {
+      it->second.flush->done.SetException(std::current_exception());
+    }
   }
   fuse_reply_err(req, 0);
 }
@@ -614,11 +630,11 @@ int Run(int argc, char** argv) {
                                   .unlink = CoroutineT<Unlink>,
                                   .rmdir = CoroutineT<Unlink>,
                                   .rename = CoroutineT<Rename>,
-                                  .open = Open,
+                                  .open = CoroutineT<Open>,
                                   .read = CoroutineT<Read>,
                                   .write = CoroutineT<Write>,
                                   .release = CoroutineT<Release>,
-                                  .opendir = OpenDir,
+                                  .opendir = CoroutineT<OpenDir>,
                                   .releasedir = CoroutineT<ReleaseDir>,
                                   .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};

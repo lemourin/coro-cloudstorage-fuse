@@ -421,7 +421,9 @@ Task<> FileSystemContext::Remove(const FileContext& context,
 auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
                                stdx::stop_token stop_token)
     -> Task<FileContext> {
-  if (config_.buffered_write) {
+  if (config_.buffered_write ||
+      (parent.item && !parent.item->provider().CanCreateFile<FileContent>(
+                          parent.item->item))) {
     co_return co_await CreateBufferedUpload(parent, name,
                                             std::move(stop_token));
   }
@@ -436,7 +438,7 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
 
 Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
                                 int64_t offset, stdx::stop_token stop_token) {
-  if (config_.buffered_write) {
+  if (item.current_write && item.current_write->tmpfile) {
     co_return co_await WriteToBufferedUpload(item, chunk, offset,
                                              std::move(stop_token));
   }
@@ -455,7 +457,7 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
 auto FileSystemContext::Flush(const FileContext& item,
                               stdx::stop_token stop_token)
     -> Task<FileContext> {
-  if (config_.buffered_write) {
+  if (item.current_write && item.current_write->tmpfile) {
     co_return co_await FlushBufferedUpload(item, std::move(stop_token));
   }
   if (!item.current_streaming_write) {
@@ -538,11 +540,30 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& item,
     co_await item.current_write->new_file_read->Get(stop_token_or.GetToken());
   }
 
+  struct RandomAccessFile {
+    int64_t size;
+    FILE* file;
+    Task<std::string> operator()(int64_t offset, int64_t chunk_size,
+                                 stdx::stop_token) const {
+      fseek(file, offset, SEEK_SET);
+      std::string buffer(chunk_size, 0);
+      buffer.resize(fread(buffer.data(), 1, chunk_size, file));
+      co_return std::move(buffer);
+    }
+  };
+
   auto file = item.current_write->tmpfile.get();
-  auto new_item = co_await item.parent->provider().CreateFile(
-      item.parent->item, item.current_write->new_name,
-      FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
-      stop_token_or.GetToken());
+  auto new_item =
+      item.parent->provider().CanCreateFile<FileContent>(item.parent->item)
+          ? co_await item.parent->provider().CreateFile(
+                item.parent->item, item.current_write->new_name,
+                FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
+                stop_token_or.GetToken())
+          : co_await item.parent->provider().CreateFile(
+                item.parent->item, item.current_write->new_name,
+                RandomAccessFile{.size = GetFileSize(file), .file = file},
+                stop_token_or.GetToken());
+
   http_.InvalidateCache();
   co_return FileContext{.item = Item(item.parent->account, std::move(new_item)),
                         .parent = item.parent};
