@@ -343,9 +343,11 @@ class WinFspContext {
             directory_name, stdx::stop_token());
 
         try {
-          co_await context->GetFileContext(ToUnixPath(filename),
-                                           stdx::stop_token());
-          *file_context = nullptr;
+          std::unique_ptr<FuseFileContext> fuse_file_context(
+              new FuseFileContext{.context = co_await context->GetFileContext(
+                                      ToUnixPath(filename), stdx::stop_token()),
+                                  .path = ToUnixPath(filename)});
+          *file_context = fuse_file_context.release();
           co_return STATUS_OBJECT_NAME_EXISTS;
         } catch (const CloudException&) {
         }
@@ -440,7 +442,7 @@ class WinFspContext {
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
-        FspFileSystemSendResponse(fs, &response) ;
+        FspFileSystemSendResponse(fs, &response);
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
         response.IoStatus.Status = ToStatus(e);
@@ -516,9 +518,6 @@ class WinFspContext {
 
   static NTSTATUS GetFileInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               FSP_FSCTL_FILE_INFO* info) {
-    if (!file_context) {
-      return STATUS_INVALID_DEVICE_REQUEST;
-    }
     auto file = static_cast<FuseFileContext*>(file_context);
     auto item = FileSystemContext::GetGenericItem(file->context);
     item.size = file->size.value_or(item.size.value_or(0));
