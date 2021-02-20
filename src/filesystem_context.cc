@@ -422,8 +422,7 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
                                stdx::stop_token stop_token)
     -> Task<FileContext> {
   if (config_.buffered_write ||
-      (parent.item && !parent.item->provider().CanCreateFile<FileContent>(
-                          parent.item->item))) {
+      (parent.item && parent.item->provider().IsFileContentSizeRequired())) {
     co_return co_await CreateBufferedUpload(parent, name,
                                             std::move(stop_token));
   }
@@ -553,16 +552,11 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& item,
   };
 
   auto file = item.current_write->tmpfile.get();
-  auto new_item =
-      item.parent->provider().CanCreateFile<FileContent>(item.parent->item)
-          ? co_await item.parent->provider().CreateFile(
-                item.parent->item, item.current_write->new_name,
-                FileContent{.data = ReadFile(file), .size = GetFileSize(file)},
-                stop_token_or.GetToken())
-          : co_await item.parent->provider().CreateFile(
-                item.parent->item, item.current_write->new_name,
-                RandomAccessFile{.size = GetFileSize(file), .file = file},
-                stop_token_or.GetToken());
+  auto new_item = co_await item.parent->provider().CreateFile(
+      item.parent->item, item.current_write->new_name,
+      AbstractCloudProviderT::FileContent{.data = ReadFile(file),
+                                          .size = GetFileSize(file)},
+      stop_token_or.GetToken());
 
   http_.InvalidateCache();
   co_return FileContext{.item = Item(item.parent->account, std::move(new_item)),
@@ -644,7 +638,8 @@ auto FileSystemContext::CurrentStreamingWrite::CreateFile()
     -> Task<AbstractCloudProviderT::Item> {
   try {
     co_return co_await parent_.provider().CreateFile(
-        parent_.item, name_, FileContent{.data = GetStream()},
+        parent_.item, name_,
+        AbstractCloudProviderT::FileContent{.data = GetStream()},
         stop_token_data_.stop_token_or.GetToken());
   } catch (...) {
     done_.SetException(std::current_exception());
