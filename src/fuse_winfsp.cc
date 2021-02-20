@@ -438,10 +438,9 @@ class WinFspContext {
             file->context, static_cast<int64_t>(offset),
             static_cast<int64_t>(length), stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
-        *bytes_transferred = content.size();
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
-        FspFileSystemSendResponse(fs, &response);
+        FspFileSystemSendResponse(fs, &response) ;
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
         response.IoStatus.Status = ToStatus(e);
@@ -517,6 +516,9 @@ class WinFspContext {
 
   static NTSTATUS GetFileInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               FSP_FSCTL_FILE_INFO* info) {
+    if (!file_context) {
+      return STATUS_INVALID_DEVICE_REQUEST;
+    }
     auto file = static_cast<FuseFileContext*>(file_context);
     auto item = FileSystemContext::GetGenericItem(file->context);
     item.size = file->size.value_or(item.size.value_or(0));

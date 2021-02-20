@@ -539,18 +539,6 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& item,
     co_await item.current_write->new_file_read->Get(stop_token_or.GetToken());
   }
 
-  struct RandomAccessFile {
-    int64_t size;
-    FILE* file;
-    Task<std::string> operator()(int64_t offset, int64_t chunk_size,
-                                 stdx::stop_token) const {
-      fseek(file, offset, SEEK_SET);
-      std::string buffer(chunk_size, 0);
-      buffer.resize(fread(buffer.data(), 1, chunk_size, file));
-      co_return std::move(buffer);
-    }
-  };
-
   auto file = item.current_write->tmpfile.get();
   auto new_item = co_await item.parent->provider().CreateFile(
       item.parent->item, item.current_write->new_name,
