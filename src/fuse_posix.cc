@@ -56,6 +56,7 @@ struct FuseFileContext {
   int64_t refcount;
   std::vector<std::string> page_token = {""};
   std::unique_ptr<Flush> flush;
+  std::optional<int64_t> size;
 };
 
 struct FuseContext {
@@ -227,14 +228,25 @@ Task<> GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
     fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
     co_await it->second.flush->promise.Get(stop_source.get_token());
   }
-  struct stat stat =
-      ToStat(FileSystemContext::GetGenericItem(it->second.context));
-  stat.st_ino = ino;
+  struct stat stat {};
+  if (ino == FUSE_ROOT_ID || it->second.context.item) {
+    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context));
+    stat.st_ino = ino;
+  } else {
+    stat.st_mode = S_IFREG | 0644;
+  }
+  if (it->second.size) {
+    stat.st_size = *it->second.size;
+  }
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
 
 Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
                fuse_file_info* fi) {
+  if ((to_set & ~FUSE_SET_ATTR_SIZE) != 0) {
+    fuse_reply_err(req, EINVAL);
+    co_return;
+  }
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it = context->file_context.find(ino);
   if (it == context->file_context.end()) {
@@ -262,9 +274,7 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
         it->second.context.item = file_context->context.item;
       }
     }
-  }
-  if (to_set & FUSE_SET_ATTR_MODE) {
-    stat.st_mode = attr->st_mode;
+    it->second.size = attr->st_size;
   }
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
@@ -568,6 +578,11 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
 Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
              off_t off, struct fuse_file_info* fi) {
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  auto it = context->file_context.find(ino);
+  if (it == context->file_context.end()) {
+    fuse_reply_err(req, ENOENT);
+    co_return;
+  }
   auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
@@ -575,7 +590,6 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
   fuse_reply_write(req, size);
-  co_return;
 }
 
 Task<> Unlink(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
