@@ -258,6 +258,9 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
       }
     }
   }
+  if (to_set & FUSE_SET_ATTR_MODE) {
+    stat.st_mode = attr->st_mode;
+  }
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
 
