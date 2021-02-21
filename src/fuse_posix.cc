@@ -595,6 +595,36 @@ Task<> Unlink(fuse_req_t req, fuse_ino_t parent, const char* name_c_str) {
   fuse_reply_err(req, 0);
 }
 
+Task<> StatFs(fuse_req_t req, fuse_ino_t ino) {
+  if (ino != FUSE_ROOT_ID) {
+    fuse_reply_err(req, EINVAL);
+    co_return;
+  }
+  auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  stdx::stop_source stop_source;
+  fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  auto volume_data =
+      co_await context->context.GetVolumeData(stop_source.get_token());
+  if (!volume_data.space_total) {
+    fuse_reply_err(req, EIO);
+    co_return;
+  }
+  struct statvfs stat {
+    .f_bsize = 1, .f_frsize = 1,
+    .f_blocks = static_cast<fsblkcnt_t>(*volume_data.space_total),
+    .f_bfree = static_cast<fsblkcnt_t>(*volume_data.space_total -
+                                       volume_data.space_used),
+    .f_bavail = static_cast<fsblkcnt_t>(*volume_data.space_total -
+                                        volume_data.space_used),
+    .f_files = std::numeric_limits<fsblkcnt_t>::max(),
+    .f_ffree = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,
+    .f_favail = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,
+    .f_fsid = 4444, .f_flag = ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOSUID,
+    .f_namemax = std::numeric_limits<fsblkcnt_t>::max()
+  };
+  fuse_reply_statfs(req, &stat);
+}
+
 }  // namespace
 
 int Run(int argc, char** argv) {
@@ -644,6 +674,7 @@ int Run(int argc, char** argv) {
                                   .release = CoroutineT<Release>,
                                   .opendir = CoroutineT<OpenDir>,
                                   .releasedir = CoroutineT<ReleaseDir>,
+                                  .statfs = CoroutineT<StatFs>,
                                   .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};
   try {
