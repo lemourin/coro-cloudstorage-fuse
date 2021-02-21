@@ -215,12 +215,17 @@ void Init(void* user_data, struct fuse_conn_info* conn) {
 
 void Destroy(void* user_data) {}
 
-void GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
+Task<> GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
   auto it = context->file_context.find(ino);
   if (it == context->file_context.end()) {
     fuse_reply_err(req, ENOENT);
-    return;
+    co_return;
+  }
+  if (it->second.flush) {
+    stdx::stop_source stop_source;
+    fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+    co_await it->second.flush->promise.Get(stop_source.get_token());
   }
   struct stat stat =
       ToStat(FileSystemContext::GetGenericItem(it->second.context));
@@ -627,7 +632,7 @@ int Run(int argc, char** argv) {
                                   .destroy = Destroy,
                                   .lookup = CoroutineT<Lookup>,
                                   .forget = Forget,
-                                  .getattr = GetAttr,
+                                  .getattr = CoroutineT<GetAttr>,
                                   .setattr = CoroutineT<SetAttr>,
                                   .mkdir = CoroutineT<MkDir>,
                                   .unlink = CoroutineT<Unlink>,
