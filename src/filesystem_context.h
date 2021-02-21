@@ -119,7 +119,8 @@ class FileSystemContext {
 
   class CurrentStreamingWrite {
    public:
-    CurrentStreamingWrite(Item parent, std::string_view name);
+    CurrentStreamingWrite(Item parent, std::optional<int64_t> size,
+                          std::string_view name);
     ~CurrentStreamingWrite();
 
     Task<> Write(std::string_view chunk, int64_t offset, stdx::stop_token);
@@ -130,6 +131,7 @@ class FileSystemContext {
     Task<AbstractCloudProviderT::Item> CreateFile();
 
     Item parent_;
+    std::optional<int64_t> size_;
     std::string name_;
     StopTokenData stop_token_data_;
     bool flushed_ = false;
@@ -211,7 +213,7 @@ class FileSystemContext {
                                     std::string_view name, stdx::stop_token);
   Task<> Remove(const FileContext&, stdx::stop_token);
   Task<FileContext> Create(const FileContext& parent, std::string_view name,
-                           stdx::stop_token);
+                           std::optional<int64_t> size, stdx::stop_token);
   Task<> Write(const FileContext&, std::string_view chunk, int64_t offset,
                stdx::stop_token);
   Task<FileContext> Flush(const FileContext& item, stdx::stop_token);

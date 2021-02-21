@@ -268,7 +268,7 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
       file_context->context = co_await context->context.Flush(
           co_await context->context.Create(parent_it->second.context, item.name,
-                                           stop_source.get_token()),
+                                           /*size=*/0, stop_source.get_token()),
           stop_source.get_token());
       if (fi) {
         it->second.context.item = file_context->context.item;
@@ -560,7 +560,7 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
   std::unique_ptr<FuseFileContext> file_context(new FuseFileContext{
       .context = co_await context->context.Create(
           parent_it->second.context, std::string_view(name, strlen(name)),
-          stop_source.get_token()),
+          /*size=*/std::nullopt, stop_source.get_token()),
       .parent = parent,
       .flags = fi->flags});
   context->file_context.emplace(

@@ -422,10 +422,12 @@ Task<> FileSystemContext::Remove(const FileContext& context,
 }
 
 auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
+                               std::optional<int64_t> size,
                                stdx::stop_token stop_token)
     -> Task<FileContext> {
   if (config_.buffered_write ||
-      (parent.item && parent.item->provider().IsFileContentSizeRequired())) {
+      (parent.item && parent.item->provider().IsFileContentSizeRequired() &&
+       !size)) {
     co_return co_await CreateBufferedUpload(parent, name,
                                             std::move(stop_token));
   }
@@ -435,7 +437,7 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
   co_return FileContext{
       .parent = parent.item,
       .current_streaming_write =
-          std::make_unique<CurrentStreamingWrite>(*parent.item, name)};
+          std::make_unique<CurrentStreamingWrite>(*parent.item, size, name)};
 }
 
 Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
@@ -447,7 +449,8 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
   if (!item.current_streaming_write) {
     if (item.item && item.item->GetGenericItem().size == 0 && item.parent) {
       item.current_streaming_write = std::make_unique<CurrentStreamingWrite>(
-          *item.parent, item.item->GetGenericItem().name);
+          *item.parent, /*size=*/std::nullopt,
+          item.item->GetGenericItem().name);
     } else {
       throw CloudException("streaming write missing");
     }
@@ -585,8 +588,9 @@ Task<> FileSystemContext::NewFileRead::operator()() {
 }
 
 FileSystemContext::CurrentStreamingWrite::CurrentStreamingWrite(
-    Item parent, std::string_view name)
+    Item parent, std::optional<int64_t> size, std::string_view name)
     : parent_(std::move(parent)),
+      size_(size),
       name_(name),
       stop_token_data_(parent_.stop_token()),
       create_file_task_(CreateFile()) {}
@@ -630,7 +634,7 @@ auto FileSystemContext::CurrentStreamingWrite::CreateFile()
   try {
     co_return co_await parent_.provider().CreateFile(
         parent_.item, name_,
-        AbstractCloudProviderT::FileContent{.data = GetStream()},
+        AbstractCloudProviderT::FileContent{.data = GetStream(), .size = size_},
         stop_token_data_.stop_token_or.GetToken());
   } catch (...) {
     done_.SetException(std::current_exception());
@@ -645,6 +649,9 @@ Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
     current_chunk_ = Promise<std::string>();
     done_.SetValue();
     co_yield std::move(chunk);
+  }
+  if (size_ && size_ != current_offset_) {
+    throw CloudException("incomplete file");
   }
 }
 

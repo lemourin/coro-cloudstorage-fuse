@@ -365,10 +365,7 @@ class WinFspContext {
           *file_info =
               FSP_FSCTL_FILE_INFO{.FileAttributes = FILE_ATTRIBUTE_NORMAL};
           std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.context = co_await context->Create(
-                                      parent, file_name, stdx::stop_token()),
-                                  .path = ToUnixPath(filename),
-                                  .size = 0});
+              new FuseFileContext{.path = ToUnixPath(filename), .size = 0});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         }
@@ -406,7 +403,7 @@ class WinFspContext {
         file->context = co_await context->Flush(
             co_await context->Create(co_await context->GetFileContext(
                                          directory_name, stdx::stop_token()),
-                                     file_name, stdx::stop_token()),
+                                     file_name, /*size=*/0, stdx::stop_token()),
             stdx::stop_token());
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
@@ -472,6 +469,15 @@ class WinFspContext {
       response.Hint = hint;
       response.IoStatus.Information = 0;
       try {
+        if (!file->context.current_write &&
+            !file->context.current_streaming_write) {
+          auto [directory_name, file_name] = SplitPath(file->path);
+          FileContext parent = co_await context->GetFileContext(
+              directory_name, stdx::stop_token());
+          file->context = co_await context->Create(
+              parent, file_name, file->size, stdx::stop_token());
+        }
+
         auto size = file->size.value();
         if (constrained_io) {
           if (offset >= size) {
@@ -546,6 +552,14 @@ class WinFspContext {
     if (file->context.current_write || file->context.current_streaming_write) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
+          if (!file->context.current_write &&
+              !file->context.current_streaming_write) {
+            auto [directory_name, file_name] = SplitPath(file->path);
+            FileContext parent = co_await context->GetFileContext(
+                directory_name, stdx::stop_token());
+            file->context = co_await context->Create(
+                parent, file_name, file->size, stdx::stop_token());
+          }
           co_await context->Flush(file->context, stdx::stop_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
