@@ -269,6 +269,9 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   if (!generic_item.size) {
     throw CloudException("size unknown");
   }
+  if (offset >= *generic_item.size) {
+    throw CloudException("invalid offset");
+  }
   size = std::min<int64_t>(size, *generic_item.size - offset);
   auto& current_read = context.current_read;
   if (current_read &&
