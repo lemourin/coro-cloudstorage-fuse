@@ -57,6 +57,7 @@ struct FuseFileContext {
   std::vector<std::string> page_token = {""};
   std::unique_ptr<Flush> flush;
   std::optional<int64_t> size;
+  std::optional<std::string> name;
 };
 
 struct FuseContext {
@@ -315,6 +316,17 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   }
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
+  if (!file_context->context.current_write &&
+      !file_context->context.current_streaming_write && file_context->name) {
+    auto parent_it = context->file_context.find(file_context->parent);
+    if (parent_it == context->file_context.end()) {
+      fuse_reply_err(req, ENOENT);
+      co_return;
+    }
+    file_context->context = co_await context->context.Create(
+        parent_it->second.context, *file_context->name, 0,
+        stop_source.get_token());
+  }
   if (file_context->context.current_write ||
       file_context->context.current_streaming_write) {
     auto it = context->file_context.find(ino);
@@ -557,18 +569,11 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
   entry.entry_timeout = kMetadataTimeout;
   entry.generation = 1;
   entry.ino = entry.attr.st_ino;
-  std::unique_ptr<FuseFileContext> file_context(new FuseFileContext{
-      .context = co_await context->context.Create(
-          parent_it->second.context, std::string_view(name, strlen(name)),
-          /*size=*/std::nullopt, stop_source.get_token()),
-      .parent = parent,
-      .flags = fi->flags});
-  context->file_context.emplace(
-      entry.ino,
-      FuseFileContext{.context = {.item = file_context->context.item,
-                                  .parent = file_context->context.parent},
-                      .parent = file_context->parent,
-                      .flags = file_context->flags});
+  std::unique_ptr<FuseFileContext> file_context(
+      new FuseFileContext{.parent = parent, .flags = fi->flags, .name = name});
+  context->file_context.emplace(entry.ino,
+                                FuseFileContext{.parent = file_context->parent,
+                                                .flags = file_context->flags});
   fi->fh = reinterpret_cast<uint64_t>(file_context.release());
   if (fuse_reply_create(req, &entry, fi) != 0) {
     delete reinterpret_cast<FuseFileContext*>(fi->fh);
@@ -587,6 +592,17 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   std::string buf(buf_cstr, size);
+  if (!file_context->context.current_write &&
+      !file_context->context.current_streaming_write && file_context->name) {
+    auto parent_it = context->file_context.find(file_context->parent);
+    if (parent_it == context->file_context.end()) {
+      fuse_reply_err(req, ENOENT);
+      co_return;
+    }
+    file_context->context = co_await context->context.Create(
+        parent_it->second.context, *file_context->name, file_context->size,
+        stop_source.get_token());
+  }
   co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
   fuse_reply_write(req, size);
