@@ -453,15 +453,16 @@ class WinFspContext {
     return STATUS_PENDING;
   }
 
-  static NTSTATUS Write(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID buffer,
+  static NTSTATUS Write(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID pbuffer,
                         UINT64 offset, ULONG length,
                         BOOLEAN write_to_end_of_file, BOOLEAN constrained_io,
                         PULONG bytes_transferred, FSP_FSCTL_FILE_INFO* info) {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     auto file = static_cast<FuseFileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-
-    context->RunOnEventLoop([=]() mutable -> Task<> {
+    context->RunOnEventLoop([=, buffer = std::string(
+                                    reinterpret_cast<const char*>(pbuffer),
+                                    length)]() mutable -> Task<> {
       FSP_FSCTL_TRANSACT_RSP response;
       memset(&response, 0, sizeof(response));
       response.Size = sizeof(response);
@@ -488,10 +489,8 @@ class WinFspContext {
           length = std::min<ULONG>(length, static_cast<ULONG>(size - offset));
         }
 
-        co_await context->Write(
-            file->context,
-            std::string_view(reinterpret_cast<char*>(buffer), length), offset,
-            stdx::stop_token());
+        co_await context->Write(file->context, buffer, offset,
+                                stdx::stop_token());
 
         auto item = FileSystemContext::GetGenericItem(file->context);
         item.size = size;
