@@ -607,6 +607,10 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
   if (current_offset_ != offset) {
     throw CloudException("write out of order");
   }
+  if (parent_.provider().IsFileContentSizeRequired() &&
+      current_offset_ + static_cast<int64_t>(chunk.size()) > size_) {
+    throw CloudException("write past declared size");
+  }
   current_offset_ += chunk.size();
   current_chunk_.SetValue(std::string(chunk));
   StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
@@ -632,12 +636,16 @@ auto FileSystemContext::CurrentStreamingWrite::Flush(
 auto FileSystemContext::CurrentStreamingWrite::CreateFile()
     -> Task<AbstractCloudProviderT::Item> {
   try {
-    co_return co_await parent_.provider().CreateFile(
+    auto item = co_await parent_.provider().CreateFile(
         parent_.item, name_,
         AbstractCloudProviderT::FileContent{.data = GetStream(), .size = size_},
         stop_token_data_.stop_token_or.GetToken());
+    current_chunk_.SetException(CloudException("unexpected short write"));
+    done_.SetException(CloudException("unexpected short write"));
+    co_return std::move(item);
   } catch (...) {
     done_.SetException(std::current_exception());
+    current_chunk_.SetException(std::current_exception());
     throw;
   }
 }
@@ -650,7 +658,8 @@ Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
     done_.SetValue();
     co_yield std::move(chunk);
   }
-  if (size_ && size_ != current_offset_) {
+  if (parent_.provider().IsFileContentSizeRequired() &&
+      size_ != current_offset_) {
     throw CloudException("incomplete file");
   }
 }
