@@ -91,6 +91,22 @@ class FileSystemContext {
   struct Range {
     int64_t offset;
     size_t size;
+
+    bool operator<(const Range& other) const {
+      return std::tie(offset, size) < std::tie(other.offset, other.size);
+    }
+  };
+
+  class SparseFile {
+   public:
+    SparseFile();
+
+    void Write(int64_t offset, std::string_view chunk);
+    std::optional<std::string> Read(int64_t offset, size_t size) const;
+
+   private:
+    std::set<Range> ranges_;
+    std::unique_ptr<FILE, FileDeleter> file_;
   };
 
   struct CurrentRead {
@@ -99,8 +115,7 @@ class FileSystemContext {
     std::string chunk;
     int64_t current_offset;
     bool pending;
-    std::unique_ptr<FILE, FileDeleter> cache;
-    std::vector<Range> ranges;
+    std::optional<SparseFile> cache;
     std::unique_ptr<StopTokenData> stop_token_data;
   };
 

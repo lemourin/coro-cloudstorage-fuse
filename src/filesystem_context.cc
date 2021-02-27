@@ -5,6 +5,9 @@
 #include <coro/http/http_server.h>
 #include <coro/util/stop_token_or.h>
 
+#undef min
+#undef max
+
 namespace coro::cloudstorage {
 
 namespace {
@@ -100,6 +103,26 @@ void WriteFile(std::FILE* file, int64_t offset, std::string_view data) {
   if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
     throw std::runtime_error("fwrite failed");
   }
+}
+
+FileSystemContext::Range Add(const FileSystemContext::Range& r1,
+                             const FileSystemContext::Range& r2) {
+  return FileSystemContext::Range{
+      .offset = std::min<int64_t>(r1.offset, r2.offset),
+      .size = static_cast<size_t>(
+          std::max<int64_t>(r1.offset + r1.size, r2.offset + r2.size) -
+          std::min<int64_t>(r1.offset, r2.offset))};
+}
+
+bool Intersects(const FileSystemContext::Range& r1,
+                const FileSystemContext::Range& r2) {
+  return std::max<int64_t>(r1.offset, r2.offset) <=
+         std::min<int64_t>(r1.offset + r1.size, r2.offset + r2.size);
+}
+
+bool IsInside(const FileSystemContext::Range& r1,
+              const FileSystemContext::Range& r2) {
+  return r1.offset >= r2.offset && r1.offset + r1.size <= r2.offset + r2.size;
 }
 
 }  // namespace
@@ -296,11 +319,16 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
 
   std::optional<CurrentRead>& current_read = context.current_read;
   if (!current_read) {
+    std::cerr << "REBUILDING SPARSE FILE\n";
     current_read = CurrentRead{
         .pending = true,
-        .cache = CreateTmpFile(),
+        .cache = SparseFile(),
         .stop_token_data =
             std::make_unique<StopTokenData>(context.item->stop_token())};
+  }
+  if (std::optional<std::string> chunk =
+          current_read->cache->Read(offset, static_cast<size_t>(size))) {
+    co_return std::move(*chunk);
   }
   if (current_read->pending || current_read->current_offset != offset) {
     current_read->chunk.clear();
@@ -325,6 +353,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     chunk.resize(static_cast<size_t>(size));
   }
   current_read->pending = false;
+  current_read->cache->Write(offset, chunk);
   co_return std::move(chunk);
 }
 
@@ -632,6 +661,58 @@ Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
   if (parent_.provider().IsFileContentSizeRequired() &&
       size_ != current_offset_) {
     throw CloudException("incomplete file");
+  }
+}
+
+FileSystemContext::SparseFile::SparseFile() : file_(CreateTmpFile()) {}
+
+void FileSystemContext::SparseFile::Write(int64_t offset,
+                                          std::string_view chunk) {
+  WriteFile(file_.get(), offset, chunk);
+  Range range{.offset = offset, .size = chunk.size()};
+  if (ranges_.empty()) {
+    ranges_.insert(range);
+  } else {
+    auto it = ranges_.upper_bound(
+        Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
+    while (
+        it != ranges_.end() &&
+        Intersects(Range{.offset = it->offset - 1, .size = it->size}, range)) {
+      range = Add(range, *it);
+      it = ranges_.erase(it);
+    }
+    if (!ranges_.empty() && it != ranges_.begin()) {
+      it = std::prev(it);
+      while (it != ranges_.end() &&
+             Intersects(Range{.offset = it->offset, .size = it->size + 1},
+                        range)) {
+        range = Add(range, *it);
+        it = ranges_.erase(it);
+        if (!ranges_.empty() && it != ranges_.begin()) {
+          it = std::prev(it);
+        } else {
+          break;
+        }
+      }
+    }
+    ranges_.insert(range);
+  }
+}
+
+std::optional<std::string> FileSystemContext::SparseFile::Read(
+    int64_t offset, size_t size) const {
+  auto it = ranges_.upper_bound(
+      Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
+  if (ranges_.empty() || it == ranges_.begin()) {
+    std::cerr << "MISS CACHE " << offset << " " << size << "\n";
+    return std::nullopt;
+  }
+  if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
+    std::cerr << "HIT CACHE " << offset << " " << size << "\n";
+    return ReadFile(file_.get(), offset, size);
+  } else {
+    std::cerr << "MISS CACHE " << offset << " " << size << "\n";
+    return std::nullopt;
   }
 }
 
