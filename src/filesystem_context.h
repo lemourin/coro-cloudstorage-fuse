@@ -88,19 +88,20 @@ class FileSystemContext {
     ~StopTokenData() { stop_source.request_stop(); }
   };
 
+  struct Range {
+    int64_t offset;
+    size_t size;
+  };
+
   struct CurrentRead {
     Generator<std::string> generator;
     std::optional<Generator<std::string>::iterator> it;
     std::string chunk;
     int64_t current_offset;
     bool pending;
+    std::unique_ptr<FILE, FileDeleter> cache;
+    std::vector<Range> ranges;
     std::unique_ptr<StopTokenData> stop_token_data;
-  };
-
-  struct QueuedRead {
-    Promise<void> awaiter;
-    int64_t offset;
-    int64_t size;
   };
 
   struct NewFileRead {
@@ -130,11 +131,6 @@ class FileSystemContext {
     Generator<std::string> GetStream();
     Task<AbstractCloudProviderT::Item> CreateFile();
 
-    struct Range {
-      int64_t offset;
-      size_t size;
-    };
-
     Item parent_;
     std::optional<int64_t> size_;
     std::string name_;
@@ -153,7 +149,6 @@ class FileSystemContext {
     std::optional<Item> parent;
 
     mutable std::optional<CurrentRead> current_read;
-    mutable std::vector<QueuedRead*> queued_reads;
     mutable std::optional<CurrentWrite> current_write;
     mutable std::unique_ptr<CurrentStreamingWrite> current_streaming_write;
   };

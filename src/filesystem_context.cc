@@ -82,6 +82,26 @@ Generator<std::string> ReadFile(std::FILE* file) {
   }
 }
 
+std::string ReadFile(std::FILE* file, int64_t offset, size_t size) {
+  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+    throw std::runtime_error("fseek failed");
+  }
+  std::string buffer(size, 0);
+  if (fread(buffer.data(), 1, size, file) != size) {
+    throw std::runtime_error("fread failed");
+  }
+  return buffer;
+}
+
+void WriteFile(std::FILE* file, int64_t offset, std::string_view data) {
+  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+    throw std::runtime_error("fseek failed");
+  }
+  if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
+    throw std::runtime_error("fwrite failed");
+  }
+}
+
 }  // namespace
 
 auto FileSystemContext::Item::provider() const -> AbstractCloudProviderT {
@@ -273,95 +293,39 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     throw CloudException("invalid offset");
   }
   size = std::min<int64_t>(size, *generic_item.size - offset);
-  auto& current_read = context.current_read;
-  if (current_read &&
-      (current_read->pending || offset > current_read->current_offset)) {
-    if (!current_read->pending) {
-      if (offset - current_read->current_offset <= 4 * size) {
-        const int max_wait = 128;
-        int current_delay = 0;
-        while (!current_read->pending && current_delay < max_wait) {
-          co_await event_loop_.Wait(current_delay, stop_token_or.GetToken());
-          current_delay = current_delay * 2 + 1;
-        }
-      }
-    }
-    if (current_read->pending) {
-      QueuedRead queued_read{.offset = offset, .size = size};
-      auto awaiter_guard = AtScopeExit([&] {
-        context.queued_reads.erase(std::find(context.queued_reads.begin(),
-                                             context.queued_reads.end(),
-                                             &queued_read));
-      });
-      context.queued_reads.emplace_back(&queued_read);
-      co_await InterruptibleAwait(queued_read.awaiter,
-                                  stop_token_or.GetToken());
-    }
+
+  std::optional<CurrentRead>& current_read = context.current_read;
+  if (!current_read) {
+    current_read = CurrentRead{
+        .pending = true,
+        .cache = CreateTmpFile(),
+        .stop_token_data =
+            std::make_unique<StopTokenData>(context.item->stop_token())};
   }
-  try {
-    if (!current_read || current_read->current_offset != offset) {
-      std::cerr << "STARTING READ " << generic_item.name << " " << offset
-                << "\n";
-      current_read = CurrentRead{
-          .current_offset = offset,
-          .pending = true,
-          .stop_token_data =
-              std::make_unique<StopTokenData>(context.item->stop_token())};
-      current_read->generator = context.item->provider().GetFileContent(
-          context.item->item, http::Range{.start = offset},
-          current_read->stop_token_data->stop_token_or.GetToken());
-      current_read->it = co_await InterruptibleAwait(
-          current_read->generator.begin(), stop_token_or.GetToken());
-    } else {
-      current_read->pending = true;
-    }
-    std::string chunk = std::exchange(current_read->chunk, "");
-    while (static_cast<int64_t>(chunk.size()) < size &&
-           *current_read->it != std::end(current_read->generator)) {
-      chunk += std::move(**current_read->it);
-      co_await InterruptibleAwait(++*current_read->it,
-                                  stop_token_or.GetToken());
-    }
-    current_read->current_offset = offset + size;
-    if (static_cast<int64_t>(chunk.size()) > size) {
-      current_read->chunk =
-          std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
-      chunk.resize(static_cast<size_t>(size));
-    }
-    current_read->pending = false;
-
-    bool woken_up_someone = false;
-    for (QueuedRead* read : context.queued_reads) {
-      if (context.current_read->current_offset == read->offset) {
-        read->awaiter.SetValue();
-        woken_up_someone = true;
-        break;
-      }
-    }
-    if (!woken_up_someone && !context.queued_reads.empty()) {
-      (*context.queued_reads.begin())->awaiter.SetValue();
-    }
-
-    co_return std::move(chunk);
-  } catch (const std::exception& e) {
-    auto current_offset =
-        current_read ? current_read->current_offset : offset + size;
-    current_read = std::nullopt;
-
-    bool woken_up_someone = false;
-    for (QueuedRead* read : context.queued_reads) {
-      if (current_offset == read->offset) {
-        read->awaiter.SetException(e);
-        woken_up_someone = true;
-        break;
-      }
-    }
-    if (!woken_up_someone && !context.queued_reads.empty()) {
-      (*context.queued_reads.begin())->awaiter.SetValue();
-    }
-
-    throw;
+  if (current_read->pending || current_read->current_offset != offset) {
+    current_read->chunk.clear();
+    current_read->current_offset = offset;
+    current_read->pending = true;
+    current_read->generator = context.item->provider().GetFileContent(
+        context.item->item, http::Range{.start = offset},
+        current_read->stop_token_data->stop_token_or.GetToken());
+    current_read->it = co_await InterruptibleAwait(
+        current_read->generator.begin(), stop_token_or.GetToken());
   }
+  std::string chunk = std::exchange(current_read->chunk, "");
+  while (static_cast<int64_t>(chunk.size()) < size &&
+         *current_read->it != std::end(current_read->generator)) {
+    chunk += std::move(**current_read->it);
+    co_await InterruptibleAwait(++*current_read->it, stop_token_or.GetToken());
+  }
+  current_read->current_offset = offset + size;
+  if (static_cast<int64_t>(chunk.size()) > size) {
+    current_read->chunk =
+        std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
+    chunk.resize(static_cast<size_t>(size));
+  }
+  current_read->pending = false;
+  co_return std::move(chunk);
 }
 
 auto FileSystemContext::Rename(const FileContext& context,
@@ -517,17 +481,7 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
     co_await context.current_write->new_file_read->Get(
         stop_token_or.GetToken());
   }
-
-  auto file = context.current_write->tmpfile.get();
-  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
-    throw CloudException("seek fail");
-  }
-
-  if (fwrite(chunk.data(), 1, chunk.size(), file) != chunk.size()) {
-    throw CloudException("write fail");
-  }
-
-  co_return;
+  WriteFile(context.current_write->tmpfile.get(), offset, chunk);
 }
 
 auto FileSystemContext::FlushBufferedUpload(const FileContext& item,
@@ -612,12 +566,7 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (!buffer_) {
       buffer_ = CreateTmpFile();
     }
-    if (fseek(buffer_.get(), static_cast<long>(offset), SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed");
-    }
-    if (fwrite(chunk.data(), 1, chunk.size(), buffer_.get()) != chunk.size()) {
-      throw std::runtime_error("fwrite failed");
-    }
+    WriteFile(buffer_.get(), offset, chunk);
     ranges_.emplace_back(Range{.offset = offset, .size = chunk.size()});
     co_return;
   }
@@ -634,15 +583,8 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (it == ranges_.end()) {
       break;
     }
-    if (fseek(buffer_.get(), static_cast<long>(it->offset), SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed");
-    }
-    std::string data_buffer(it->size, 0);
-    if (fread(data_buffer.data(), 1, it->size, buffer_.get()) != it->size) {
-      throw std::runtime_error("fread failed");
-    }
+    current_chunk_.SetValue(ReadFile(buffer_.get(), it->offset, it->size));
     current_offset_ += it->size;
-    current_chunk_.SetValue(std::move(data_buffer));
     co_await InterruptibleAwait(done_, stop_token_or.GetToken());
     done_ = Promise<void>();
   };
