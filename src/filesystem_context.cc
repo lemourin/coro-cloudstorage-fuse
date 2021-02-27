@@ -604,12 +604,22 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
   if (flushed_) {
     throw CloudException("write after flush");
   }
-  if (current_offset_ != offset) {
-    throw CloudException("write out of order");
-  }
   if (parent_.provider().IsFileContentSizeRequired() &&
       current_offset_ + static_cast<int64_t>(chunk.size()) > size_) {
     throw CloudException("write past declared size");
+  }
+  if (current_offset_ != offset) {
+    if (!buffer_) {
+      buffer_ = CreateTmpFile();
+    }
+    if (fseek(buffer_.get(), static_cast<long>(offset), SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed");
+    }
+    if (fwrite(chunk.data(), 1, chunk.size(), buffer_.get()) != chunk.size()) {
+      throw std::runtime_error("fwrite failed");
+    }
+    ranges_.emplace_back(Range{.offset = offset, .size = chunk.size()});
+    co_return;
   }
   current_offset_ += chunk.size();
   current_chunk_.SetValue(std::string(chunk));
@@ -617,6 +627,25 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
                             std::move(stop_token));
   co_await InterruptibleAwait(done_, stop_token_or.GetToken());
   done_ = Promise<void>();
+  while (true) {
+    auto it = std::find_if(ranges_.begin(), ranges_.end(), [&](const auto& d) {
+      return d.offset == current_offset_;
+    });
+    if (it == ranges_.end()) {
+      break;
+    }
+    if (fseek(buffer_.get(), static_cast<long>(it->offset), SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed");
+    }
+    std::string data_buffer(it->size, 0);
+    if (fread(data_buffer.data(), 1, it->size, buffer_.get()) != it->size) {
+      throw std::runtime_error("fread failed");
+    }
+    current_offset_ += it->size;
+    current_chunk_.SetValue(std::move(data_buffer));
+    co_await InterruptibleAwait(done_, stop_token_or.GetToken());
+    done_ = Promise<void>();
+  };
 }
 
 auto FileSystemContext::CurrentStreamingWrite::Flush(

@@ -130,6 +130,11 @@ class FileSystemContext {
     Generator<std::string> GetStream();
     Task<AbstractCloudProviderT::Item> CreateFile();
 
+    struct Range {
+      int64_t offset;
+      size_t size;
+    };
+
     Item parent_;
     std::optional<int64_t> size_;
     std::string name_;
@@ -138,6 +143,8 @@ class FileSystemContext {
     Promise<std::string> current_chunk_;
     Promise<void> done_;
     int64_t current_offset_ = 0;
+    std::unique_ptr<FILE, FileDeleter> buffer_;
+    std::vector<Range> ranges_;
     Task<AbstractCloudProviderT::Item> create_file_task_;
   };
 
