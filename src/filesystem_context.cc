@@ -323,7 +323,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
                                                 stop_token_or.GetToken());
   if (!current_read) {
     current_read = CurrentRead{
-        .pending = true,
+        .current_offset = INT64_MAX,
         .stop_token_data =
             std::make_unique<StopTokenData>(context.item->stop_token())};
   }
@@ -331,12 +331,30 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
           cache_file->Read(offset, static_cast<size_t>(size))) {
     co_return std::move(*chunk);
   }
-  if (current_read->pending || current_read->current_offset != offset) {
+  if (current_read->pending) {
+    QueuedRead read{.offset = offset};
+    current_read->reads.emplace_back(&read);
+    auto guard = AtScopeExit([&] {
+      current_read->reads.erase(std::find(current_read->reads.begin(),
+                                          current_read->reads.end(), &read));
+    });
+    co_await InterruptibleAwait(read.semaphore, stop_token_or.GetToken());
+  }
+  current_read->pending = true;
+  auto guard = AtScopeExit([&] {
+    current_read->pending = false;
+    auto it = std::min_element(
+        current_read->reads.begin(), current_read->reads.end(),
+        [&](auto* d1, auto* d2) { return d1->offset < d2->offset; });
+    if (it != current_read->reads.end()) {
+      (*it)->semaphore.SetValue();
+    }
+  });
+  if (current_read->current_offset != offset) {
     std::cerr << "START READ " << offset << " "
               << context.item->GetGenericItem().name << "\n";
     current_read->chunk.clear();
     current_read->current_offset = offset;
-    current_read->pending = true;
     current_read->generator = context.item->provider().GetFileContent(
         context.item->item, http::Range{.start = offset},
         current_read->stop_token_data->stop_token_or.GetToken());
@@ -355,7 +373,6 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
         std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
     chunk.resize(static_cast<size_t>(size));
   }
-  current_read->pending = false;
   cache_file->Write(offset, chunk);
   co_return std::move(chunk);
 }

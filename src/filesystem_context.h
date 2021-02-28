@@ -111,13 +111,18 @@ class FileSystemContext {
     std::unique_ptr<FILE, FileDeleter> file_;
   };
 
+  struct QueuedRead {
+    int64_t offset;
+    Promise<void> semaphore;
+  };
+
   struct CurrentRead {
     Generator<std::string> generator;
     std::optional<Generator<std::string>::iterator> it;
     std::string chunk;
     int64_t current_offset;
     bool pending;
-    std::optional<SparseFile> cache;
+    std::vector<QueuedRead*> reads;
     std::unique_ptr<StopTokenData> stop_token_data;
   };
 
