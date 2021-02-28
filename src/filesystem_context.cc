@@ -21,7 +21,7 @@ concept HasUsageData = requires(T v) {
   { v.space_used }
   ->stdx::convertible_to<int64_t>;
   { v.space_total }
-  ->stdx::convertible_to<int64_t>;
+  ->stdx::convertible_to<std::optional<int64_t>>;
 };
 
 template <typename T, typename C>
