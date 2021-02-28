@@ -128,25 +128,26 @@ bool IsInside(const FileSystemContext::Range& r1,
 }  // namespace
 
 auto FileSystemContext::Item::provider() const -> AbstractCloudProviderT {
-  auto acc = account.lock();
-  if (!acc) {
-    throw CloudException(CloudException::Type::kNotFound);
-  }
   return std::visit(
       [](auto& provider) { return AbstractCloudProviderT(&provider); },
-      acc->provider);
+      GetAccount()->provider);
 }
 
 stdx::stop_token FileSystemContext::Item::stop_token() const {
-  auto acc = account.lock();
-  if (!acc) {
-    throw CloudException(CloudException::Type::kNotFound);
-  }
-  return acc->stop_source.get_token();
+  return GetAccount()->stop_source.get_token();
 }
 
 auto FileSystemContext::Item::GetGenericItem() const -> GenericItem {
   return AbstractCloudProviderT::ToGenericItem(item);
+}
+
+auto FileSystemContext::Item::GetAccount() const
+    -> std::shared_ptr<CloudProviderAccount> {
+  auto acc = account.lock();
+  if (!acc) {
+    throw CloudException(CloudException::Type::kNotFound);
+  }
+  return acc;
 }
 
 void FileSystemContext::AccountListener::OnCreate(CloudProviderAccount* d) {
@@ -165,7 +166,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_base_(event_base),
       event_loop_(event_base_),
       http_(http::CurlHttp(event_base)),
-      config_(std::move(config)),
+      config_(config),
       content_cache_(config_.cache_size, SparseFileFactory{}) {
   Invoke(Main());
 }

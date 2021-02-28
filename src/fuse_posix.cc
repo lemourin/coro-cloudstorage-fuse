@@ -49,6 +49,25 @@ struct Flush {
   SharedPromise<Callback> promise;
 };
 
+struct ItemId {
+  size_t account_type;
+  std::string account_id;
+  std::string item_id;
+
+  bool operator==(const ItemId& other) const {
+    return std::tie(account_type, account_id, item_id) ==
+           std::tie(other.account_type, other.account_id, other.item_id);
+  }
+};
+
+struct ItemIdHash {
+  auto operator()(const ItemId& id) const {
+    return std::hash<size_t>{}(id.account_type) +
+           std::hash<std::string>{}(id.account_id) +
+           std::hash<std::string>{}(id.item_id);
+  }
+};
+
 struct FuseFileContext {
   FileContext context;
   fuse_ino_t parent;
@@ -58,11 +77,12 @@ struct FuseFileContext {
   std::unique_ptr<Flush> flush;
   std::optional<int64_t> size;
   std::optional<std::string> name;
+  std::optional<ItemId> id;
 };
 
 struct FuseContext {
   std::unordered_map<fuse_ino_t, FuseFileContext> file_context;
-  std::unordered_map<std::string, fuse_ino_t> inode;
+  std::unordered_map<ItemId, fuse_ino_t, ItemIdHash> inode;
   FileSystemContext context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
@@ -142,9 +162,10 @@ template <auto F>
 constexpr auto CoroutineT =
     Coroutine<F, coro::util::ArgumentListTypeT<decltype(F)>>::Do;
 
-std::string GetItemId(const FileContext& context) {
-  return std::to_string(context.item->provider().id()) + '#' +
-         FileSystemContext::GetGenericItem(context).id;
+ItemId GetItemId(const FileContext& context) {
+  return ItemId{.account_type = context.item->provider().type(),
+                .account_id = context.item->GetAccount()->id,
+                .item_id = FileSystemContext::GetGenericItem(context).id};
 }
 
 fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
@@ -158,8 +179,8 @@ fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
     return it->second;
   } else {
     context->inode.emplace(item_id, context->next_inode);
-    context->file_context[context->next_inode] =
-        FuseFileContext{.context = std::move(file_context), .parent = parent};
+    context->file_context[context->next_inode] = FuseFileContext{
+        .context = std::move(file_context), .parent = parent, .id = item_id};
     return context->next_inode++;
   }
 }
@@ -354,8 +375,10 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
     try {
       auto new_item = co_await context->context.Flush(file_context->context,
                                                       stop_source.get_token());
-      context->inode.emplace(GetItemId(new_item), ino);
+      auto new_id = GetItemId(new_item);
+      context->inode.emplace(new_id, ino);
       it->second.context = std::move(new_item);
+      it->second.id = std::move(new_id);
       it->second.flush->done.SetValue();
     } catch (...) {
       it->second.flush->done.SetException(std::current_exception());
@@ -464,7 +487,9 @@ void Forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
   }
   it->second.refcount -= nlookup;
   if (it->second.refcount == 0) {
-    context->inode.erase(GetItemId(it->second.context));
+    if (it->second.id) {
+      context->inode.erase(*it->second.id);
+    }
     context->file_context.erase(it);
   }
   fuse_reply_none(req);
@@ -502,7 +527,7 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   auto source_item = co_await FindFile(context, it_parent->second, name,
                                        stop_source.get_token());
-  std::string previous_id = FileSystemContext::GetGenericItem(source_item).id;
+  auto previous_id = GetItemId(source_item);
 
   FileContext new_item = {.item = source_item.item};
   if (name != new_name) {
@@ -523,11 +548,12 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
   if (auto it = context->inode.find(previous_id);
       it != std::end(context->inode)) {
     auto inode = it->second;
+    auto new_id = GetItemId(new_item);
     context->inode.erase(it);
-    context->inode.emplace(FileSystemContext::GetGenericItem(new_item).id,
-                           inode);
+    context->inode.emplace(new_id, inode);
     auto& file_context = context->file_context[inode];
     file_context.context = std::move(new_item);
+    file_context.id = std::move(new_id);
     file_context.parent = parent;
   }
   fuse_reply_err(req, 0);
@@ -549,7 +575,6 @@ Task<> MkDir(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode) {
   fuse_entry_param entry =
       CreateFuseEntry(context, parent, std::move(new_directory));
   fuse_reply_entry(req, &entry);
-  co_return;
 }
 
 Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,

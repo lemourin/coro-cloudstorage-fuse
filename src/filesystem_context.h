@@ -69,6 +69,7 @@ class FileSystemContext {
     AbstractCloudProviderT provider() const;
     stdx::stop_token stop_token() const;
     GenericItem GetGenericItem() const;
+    std::shared_ptr<CloudProviderAccount> GetAccount() const;
 
     std::weak_ptr<CloudProviderAccount> account;
     AbstractCloudProviderT::Item item;
