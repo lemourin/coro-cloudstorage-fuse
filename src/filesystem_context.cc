@@ -165,7 +165,8 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_base_(event_base),
       event_loop_(event_base_),
       http_(http::CurlHttp(event_base)),
-      config_(std::move(config)) {
+      config_(std::move(config)),
+      content_cache_(config_.cache_size, SparseFileFactory{}) {
   Invoke(Main());
 }
 
@@ -318,19 +319,23 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   size = std::min<int64_t>(size, *generic_item.size - offset);
 
   std::optional<CurrentRead>& current_read = context.current_read;
+  CacheKey cache_id{.account_id = context.item->provider().id(),
+                    .item_id = context.item->GetGenericItem().id};
+  auto cache_file =
+      co_await content_cache_.Get(cache_id, stop_token_or.GetToken());
   if (!current_read) {
     current_read = CurrentRead{
         .pending = true,
-        .cache = SparseFile(),
         .stop_token_data =
             std::make_unique<StopTokenData>(context.item->stop_token())};
   }
   if (std::optional<std::string> chunk =
-          current_read->cache->Read(offset, static_cast<size_t>(size))) {
+          cache_file->Read(offset, static_cast<size_t>(size))) {
     co_return std::move(*chunk);
   }
   if (current_read->pending || current_read->current_offset != offset) {
-    std::cerr << "START READ " << offset << "\n";
+    std::cerr << "START READ " << offset << " "
+              << context.item->GetGenericItem().name << "\n";
     current_read->chunk.clear();
     current_read->current_offset = offset;
     current_read->pending = true;
@@ -353,7 +358,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     chunk.resize(static_cast<size_t>(size));
   }
   current_read->pending = false;
-  current_read->cache->Write(offset, chunk);
+  cache_file->Write(offset, chunk);
   co_return std::move(chunk);
 }
 
@@ -418,14 +423,13 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
                                std::optional<int64_t> size,
                                stdx::stop_token stop_token)
     -> Task<FileContext> {
-  if (config_.buffered_write ||
-      (parent.item && parent.item->provider().IsFileContentSizeRequired() &&
-       !size)) {
-    co_return co_await CreateBufferedUpload(parent, name,
-                                            std::move(stop_token));
-  }
   if (!parent.item) {
     throw CloudException("invalid parent");
+  }
+  if (config_.buffered_write ||
+      (parent.item->provider().IsFileContentSizeRequired() && !size)) {
+    co_return co_await CreateBufferedUpload(parent, name,
+                                            std::move(stop_token));
   }
   co_return FileContext{
       .parent = parent.item,

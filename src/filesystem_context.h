@@ -16,6 +16,7 @@
 #include <coro/stdx/concepts.h>
 #include <coro/task.h>
 #include <coro/util/event_loop.h>
+#include <coro/util/lru_cache.h>
 #include <coro/util/type_list.h>
 #include <event.h>
 
@@ -30,6 +31,7 @@ class FileSystemContext {
 
   struct Config {
     bool buffered_write;
+    int cache_size;
   };
 
   struct AccountListener;
@@ -173,7 +175,8 @@ class FileSystemContext {
     std::optional<std::string> next_page_token;
   };
 
-  explicit FileSystemContext(event_base*, Config = {.buffered_write = false});
+  explicit FileSystemContext(event_base*, Config = {.buffered_write = false,
+                                                    .cache_size = 16});
   ~FileSystemContext();
 
   FileSystemContext(const FileSystemContext&) = delete;
@@ -252,6 +255,29 @@ class FileSystemContext {
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
   Task<> Main();
 
+  struct CacheKey {
+    intptr_t account_id;
+    std::string item_id;
+
+    bool operator==(const CacheKey& other) const {
+      return std::tie(account_id, item_id) ==
+             std::tie(other.account_id, other.item_id);
+    }
+  };
+
+  struct HashCacheKey {
+    auto operator()(const CacheKey& d) const {
+      return std::hash<std::string>{}(std::to_string(d.account_id) + d.item_id);
+    }
+  };
+
+  struct SparseFileFactory {
+    Task<std::shared_ptr<SparseFile>> operator()(const CacheKey&,
+                                                 stdx::stop_token) const {
+      co_return std::make_shared<SparseFile>();
+    }
+  };
+
   coro::Promise<void> quit_;
   event_base* event_base_;
   coro::util::EventLoop event_loop_;
@@ -259,6 +285,8 @@ class FileSystemContext {
   bool quit_called_ = false;
   Http http_;
   Config config_;
+  mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
+      content_cache_;
 };
 
 }  // namespace coro::cloudstorage
