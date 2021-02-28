@@ -56,7 +56,7 @@ class FileSystemContext {
     std::optional<int64_t> space_total;
   };
 
-  using AbstractCloudProvider = AccountManagerHandlerT::AbstractCloudProvider;
+  using AbstractCloudProvider = AccountManagerHandlerT::AbstractCloudProviderT;
   using AbstractCloudProviderT = AbstractCloudProvider::CloudProvider;
 
   using GenericItem = AbstractCloudProvider::GenericItem;
