@@ -474,10 +474,11 @@ auto FileSystemContext::CreateBufferedUpload(const FileContext& parent,
   if (!parent.item) {
     throw CloudException("invalid parent");
   }
-  co_return FileContext{
+  FileContext result{
       .parent = parent.item,
       .current_write = CurrentWrite{.tmpfile = CreateTmpFile(),
                                     .new_name = std::string(name)}};
+  co_return std::move(result);
 }
 
 Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,

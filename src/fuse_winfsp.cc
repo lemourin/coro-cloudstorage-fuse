@@ -192,50 +192,49 @@ class WinFspContext {
   static NTSTATUS Open(FSP_FILE_SYSTEM* fs, PWSTR filename,
                        UINT32 create_options, UINT32 granted_access,
                        PVOID* file_context, FSP_FSCTL_FILE_INFO* file_info) {
-    try {
-      auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
-      std::promise<FileContext> result;
-      FileContext data = context->Do([=] {
-        return context->GetFileContext(ToUnixPath(filename),
-                                       stdx::stop_token());
-      });
-      ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
-      std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
-          .context = std::move(data), .path = ToUnixPath(filename)});
-      *file_context = fuse_file_context.release();
-      return STATUS_SUCCESS;
-    } catch (const CloudException& e) {
-      std::cerr << "ERROR " << e.what() << " " << ToUnixPath(filename) << "\n";
-      return ToStatus(e);
-    } catch (const std::exception& e) {
-      std::cerr << "ERROR " << e.what() << "\n";
-      return STATUS_INVALID_DEVICE_REQUEST;
-    }
+    auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
+    return context->Do([=]() -> Task<NTSTATUS> {
+      try {
+        FileContext data = co_await context->GetFileContext(
+            ToUnixPath(filename), stdx::stop_token());
+        ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
+        std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
+            .context = std::move(data), .path = ToUnixPath(filename)});
+        *file_context = fuse_file_context.release();
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << " " << ToUnixPath(filename)
+                  << "\n";
+        co_return ToStatus(e);
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return STATUS_INVALID_DEVICE_REQUEST;
+      }
+    });
   }
 
   static NTSTATUS GetVolumeInfo(FSP_FILE_SYSTEM* fs,
                                 FSP_FSCTL_VOLUME_INFO* volume_info) {
-    try {
-      auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
-
-      auto data = context->Do(
-          [context] { return context->GetVolumeData(stdx::stop_token()); });
-      volume_info->FreeSize =
-          data.space_total ? *data.space_total - data.space_used : UINT64_MAX;
-      volume_info->TotalSize =
-          data.space_total ? *data.space_total : UINT64_MAX;
-      wcscpy_s(volume_info->VolumeLabel, L"cloudstorage");
-      volume_info->VolumeLabelLength =
-          static_cast<UINT16>(wcslen(volume_info->VolumeLabel));
-
-      return STATUS_SUCCESS;
-    } catch (const CloudException& e) {
-      std::cerr << "ERROR " << e.what() << "\n";
-      return ToStatus(e);
-    } catch (const std::exception& e) {
-      std::cerr << "ERROR " << e.what() << "\n";
-      return STATUS_INVALID_DEVICE_REQUEST;
-    }
+    auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
+    return context->Do([=]() -> Task<NTSTATUS> {
+      try {
+        auto data = co_await context->GetVolumeData(stdx::stop_token());
+        volume_info->FreeSize =
+            data.space_total ? *data.space_total - data.space_used : UINT64_MAX;
+        volume_info->TotalSize =
+            data.space_total ? *data.space_total : UINT64_MAX;
+        wcscpy_s(volume_info->VolumeLabel, L"cloudstorage");
+        volume_info->VolumeLabelLength =
+            static_cast<UINT16>(wcslen(volume_info->VolumeLabel));
+        co_return STATUS_SUCCESS;
+      } catch (const CloudException& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return ToStatus(e);
+      } catch (const std::exception& e) {
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return STATUS_INVALID_DEVICE_REQUEST;
+      }
+    });
   }
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
