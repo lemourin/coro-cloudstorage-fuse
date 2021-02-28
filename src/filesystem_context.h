@@ -265,6 +265,11 @@ class FileSystemContext {
     }
   };
 
+  static CacheKey GetCacheKey(const FileContext& context) {
+    return CacheKey{.account_id = context.item->provider().id(),
+                    .item_id = context.item->GetGenericItem().id};
+  }
+
   struct HashCacheKey {
     auto operator()(const CacheKey& d) const {
       return std::hash<std::string>{}(std::to_string(d.account_id) + d.item_id);
