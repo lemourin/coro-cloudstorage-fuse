@@ -319,7 +319,6 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
 
   std::optional<CurrentRead>& current_read = context.current_read;
   if (!current_read) {
-    std::cerr << "REBUILDING SPARSE FILE\n";
     current_read = CurrentRead{
         .pending = true,
         .cache = SparseFile(),
@@ -331,6 +330,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     co_return std::move(*chunk);
   }
   if (current_read->pending || current_read->current_offset != offset) {
+    std::cerr << "START READ " << offset << "\n";
     current_read->chunk.clear();
     current_read->current_offset = offset;
     current_read->pending = true;
@@ -705,14 +705,11 @@ std::optional<std::string> FileSystemContext::SparseFile::Read(
   auto it = ranges_.upper_bound(
       Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
   if (ranges_.empty() || it == ranges_.begin()) {
-    std::cerr << "MISS CACHE " << offset << " " << size << "\n";
     return std::nullopt;
   }
   if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
-    std::cerr << "HIT CACHE " << offset << " " << size << "\n";
     return ReadFile(file_.get(), offset, size);
   } else {
-    std::cerr << "MISS CACHE " << offset << " " << size << "\n";
     return std::nullopt;
   }
 }
