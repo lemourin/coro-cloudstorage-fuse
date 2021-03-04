@@ -248,7 +248,8 @@ Task<> GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
   if (it->second.flush) {
     stdx::stop_source stop_source;
     fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-    co_await it->second.flush->promise.Get(stop_source.get_token());
+    const auto& promise = it->second.flush->promise;
+    co_await promise.Get(stop_source.get_token());
   }
   struct stat stat {};
   if (ino == FUSE_ROOT_ID || it->second.context.item) {
@@ -311,7 +312,8 @@ Task<> Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
   if (it->second.flush) {
     stdx::stop_source stop_source;
     fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-    co_await it->second.flush->promise.Get(stop_source.get_token());
+    const auto& promise = it->second.flush->promise;
+    co_await promise.Get(stop_source.get_token());
   }
   fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
       .context = FileContext{.item = it->second.context.item,
@@ -416,7 +418,8 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   if (it->second.flush) {
-    co_await it->second.flush->promise.Get(stop_source.get_token());
+    const auto& promise = it->second.flush->promise;
+    co_await promise.Get(stop_source.get_token());
   }
   auto page = co_await context->context.ReadDirectoryPage(
       file_context.context,

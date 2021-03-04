@@ -36,9 +36,8 @@ class FileSystemContext {
 
   struct AccountListener;
 
-  using CloudProviders = coro::util::TypeList<
-      coro::cloudstorage::GoogleDrive, coro::cloudstorage::Mega,
-      coro::cloudstorage::OneDrive, coro::cloudstorage::Dropbox>;
+  using CloudProviders =
+      coro::util::TypeList<GoogleDrive, Mega, OneDrive, Dropbox>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
