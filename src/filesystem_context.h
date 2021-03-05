@@ -17,6 +17,7 @@
 #include <coro/task.h>
 #include <coro/util/event_loop.h>
 #include <coro/util/lru_cache.h>
+#include <coro/util/thread_pool.h>
 #include <coro/util/type_list.h>
 #include <event.h>
 
@@ -28,6 +29,7 @@ class FileSystemContext {
  public:
   using Http = http::CacheHttp<http::CurlHttp>;
   using EventLoop = ::coro::util::EventLoop;
+  using ThreadPool = ::coro::util::ThreadPool;
 
   struct Config {
     bool buffered_write;
@@ -103,8 +105,9 @@ class FileSystemContext {
    public:
     SparseFile();
 
-    void Write(int64_t offset, std::string_view chunk);
-    std::optional<std::string> Read(int64_t offset, size_t size) const;
+    Task<> Write(ThreadPool*, int64_t offset, std::string_view chunk);
+    Task<std::optional<std::string>> Read(ThreadPool* thread_pool,
+                                          int64_t offset, size_t size) const;
 
    private:
     std::set<Range> ranges_;
@@ -128,6 +131,7 @@ class FileSystemContext {
 
   struct NewFileRead {
     Task<> operator()();
+    ThreadPool* thread_pool;
     Item item;
     std::FILE* file;
     stdx::stop_token stop_token;
@@ -146,7 +150,8 @@ class FileSystemContext {
                           std::string_view name);
     ~CurrentStreamingWrite();
 
-    Task<> Write(std::string_view chunk, int64_t offset, stdx::stop_token);
+    Task<> Write(ThreadPool*, std::string_view chunk, int64_t offset,
+                 stdx::stop_token);
     Task<Item> Flush(stdx::stop_token);
 
    private:
@@ -190,27 +195,10 @@ class FileSystemContext {
   FileSystemContext& operator=(FileSystemContext&&) = delete;
 
   template <typename F>
-  void RunOnEventLoop(F func) {
-    F* data = new F(std::move(func));
-    if (event_base_once(
-            event_base_, -1, EV_TIMEOUT,
-            [](evutil_socket_t, short, void* d) {
-              Invoke([func = reinterpret_cast<F*>(d)]() -> Task<> {
-                co_await (*func)();
-                delete func;
-              });
-            },
-            data, nullptr) != 0) {
-      delete data;
-      throw std::runtime_error("can't run on event loop");
-    }
-  }
-
-  template <typename F>
   auto Do(F func) {
     using ResultType = decltype(func().await_resume());
     std::promise<ResultType> result;
-    RunOnEventLoop([&result, &func]() -> Task<> {
+    event_loop_.RunOnEventLoop([&result, &func]() -> Task<> {
       try {
         result.set_value(co_await func());
       } catch (const std::exception&) {
@@ -297,6 +285,7 @@ class FileSystemContext {
   Config config_;
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
+  mutable ThreadPool thread_pool_;
 };
 
 }  // namespace coro::cloudstorage

@@ -14,6 +14,7 @@ namespace {
 
 using ::coro::util::AtScopeExit;
 using ::coro::util::StopTokenOr;
+using ::coro::util::ThreadPool;
 using ::coro::util::TypeList;
 
 template <typename T>
@@ -66,43 +67,52 @@ auto CreateTmpFile() {
   }());
 }
 
-int64_t GetFileSize(std::FILE* file) {
-  fseek(file, 0, SEEK_END);
-  int64_t size = ftell(file);
-  fseek(file, 0, SEEK_SET);
-  return size;
+Task<int64_t> GetFileSize(ThreadPool* thread_pool, std::FILE* file) {
+  return thread_pool->Invoke([=] {
+    if (fseek(file, 0, SEEK_END) != 0) {
+      throw std::runtime_error("fseek failed");
+    }
+    return ftell(file);
+  });
 }
 
-Generator<std::string> ReadFile(std::FILE* file) {
+Generator<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file) {
   const int kBufferSize = 4096;
   char buffer[kBufferSize];
   while (feof(file) == 0) {
-    size_t size = fread(buffer, 1, kBufferSize, file);
-    if (int error = ferror(file)) {
+    size_t size =
+        co_await thread_pool->Invoke(fread, &buffer, 1, kBufferSize, file);
+    if (ferror(file) != 0) {
       throw std::runtime_error("read error");
     }
     co_yield std::string(buffer, size);
   }
 }
 
-std::string ReadFile(std::FILE* file, int64_t offset, size_t size) {
-  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
-    throw std::runtime_error("fseek failed");
-  }
-  std::string buffer(size, 0);
-  if (fread(buffer.data(), 1, size, file) != size) {
-    throw std::runtime_error("fread failed");
-  }
-  return buffer;
+Task<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file,
+                           int64_t offset, size_t size) {
+  return thread_pool->Invoke([=] {
+    if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed");
+    }
+    std::string buffer(size, 0);
+    if (fread(buffer.data(), 1, size, file) != size) {
+      throw std::runtime_error("fread failed");
+    }
+    return buffer;
+  });
 }
 
-void WriteFile(std::FILE* file, int64_t offset, std::string_view data) {
-  if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
-    throw std::runtime_error("fseek failed");
-  }
-  if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
-    throw std::runtime_error("fwrite failed");
-  }
+Task<> WriteFile(ThreadPool* thread_pool, std::FILE* file, int64_t offset,
+                 std::string_view data) {
+  return thread_pool->Invoke([=] {
+    if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed");
+    }
+    if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
+      throw std::runtime_error("fwrite failed");
+    }
+  });
 }
 
 FileSystemContext::Range Add(const FileSystemContext::Range& r1,
@@ -167,7 +177,8 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       event_loop_(event_base_),
       http_(http::CurlHttp(event_base)),
       config_(config),
-      content_cache_(config_.cache_size, SparseFileFactory{}) {
+      content_cache_(config_.cache_size, SparseFileFactory{}),
+      thread_pool_(event_loop_) {
   Invoke(Main());
 }
 
@@ -328,8 +339,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
             std::make_unique<StopTokenData>(context.item->stop_token())};
   }
   CurrentRead& current_read = *context.current_read;
-  if (std::optional<std::string> chunk =
-          cache_file->Read(offset, static_cast<size_t>(size))) {
+  if (std::optional<std::string> chunk = co_await cache_file->Read(
+          &thread_pool_, offset, static_cast<size_t>(size))) {
     co_return std::move(*chunk);
   }
   if (current_read.pending) {
@@ -374,7 +385,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
         std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
     chunk.resize(static_cast<size_t>(size));
   }
-  cache_file->Write(offset, chunk);
+  co_await cache_file->Write(&thread_pool_, offset, chunk);
   co_return std::move(chunk);
 }
 
@@ -473,7 +484,7 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
       throw CloudException("streaming write missing");
     }
   }
-  co_await item.current_streaming_write->Write(chunk, offset,
+  co_await item.current_streaming_write->Write(&thread_pool_, chunk, offset,
                                                std::move(stop_token));
 }
 
@@ -517,7 +528,8 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
     auto stop_token_data =
         std::make_unique<StopTokenData>(context.item->stop_token());
     auto file = CreateTmpFile();
-    NewFileRead read{.item = *context.item,
+    NewFileRead read{.thread_pool = &thread_pool_,
+                     .item = *context.item,
                      .file = file.get(),
                      .stop_token = stop_token_data->stop_token_or.GetToken()};
     context.current_write =
@@ -532,11 +544,11 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
 
   StopTokenOr stop_token_or(std::move(stop_token),
                             context.parent->stop_token());
-  if (context.current_write->new_file_read) {
-    const auto& promise = *context.current_write->new_file_read;
-    co_await promise.Get(stop_token_or.GetToken());
+  const auto& current_write = *context.current_write;
+  if (current_write.new_file_read) {
+    co_await current_write.new_file_read->Get(stop_token_or.GetToken());
   }
-  WriteFile(context.current_write->tmpfile.get(), offset, chunk);
+  co_await WriteFile(&thread_pool_, current_write.tmpfile.get(), offset, chunk);
 }
 
 auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
@@ -560,8 +572,9 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
   auto* file = current_write.tmpfile.get();
   auto item = co_await context.parent->provider().CreateFile(
       context.parent->item, current_write.new_name,
-      AbstractCloudProviderT::FileContent{.data = ReadFile(file),
-                                          .size = GetFileSize(file)},
+      AbstractCloudProviderT::FileContent{
+          .data = ReadFile(&thread_pool_, file),
+          .size = co_await GetFileSize(&thread_pool_, file)},
       stop_token_or.GetToken());
   http_.InvalidateCache();
   FileContext new_item{.item = Item(context.parent->account, std::move(item)),
@@ -594,7 +607,8 @@ Task<> FileSystemContext::NewFileRead::operator()() {
   FOR_CO_AWAIT(std::string & chunk,
                item.provider().GetFileContent(item.item, http::Range{},
                                               std::move(stop_token))) {
-    if (fwrite(chunk.data(), 1, chunk.size(), file) != chunk.size()) {
+    if (co_await thread_pool->Invoke(fwrite, chunk.data(), 1, chunk.size(),
+                                     file) != chunk.size()) {
       throw CloudException("write fail");
     }
   }
@@ -613,7 +627,8 @@ FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
 }
 
 Task<> FileSystemContext::CurrentStreamingWrite::Write(
-    std::string_view chunk, int64_t offset, stdx::stop_token stop_token) {
+    ThreadPool* thread_pool, std::string_view chunk, int64_t offset,
+    stdx::stop_token stop_token) {
   if (flushed_) {
     throw CloudException("write after flush");
   }
@@ -625,7 +640,7 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (!buffer_) {
       buffer_ = CreateTmpFile();
     }
-    WriteFile(buffer_.get(), offset, chunk);
+    co_await WriteFile(thread_pool, buffer_.get(), offset, chunk);
     ranges_.emplace_back(Range{.offset = offset, .size = chunk.size()});
     co_return;
   }
@@ -642,7 +657,8 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (it == ranges_.end()) {
       break;
     }
-    current_chunk_.SetValue(ReadFile(buffer_.get(), it->offset, it->size));
+    current_chunk_.SetValue(
+        co_await ReadFile(thread_pool, buffer_.get(), it->offset, it->size));
     current_offset_ += it->size;
     co_await InterruptibleAwait(done_, stop_token_or.GetToken());
     done_ = Promise<void>();
@@ -696,9 +712,10 @@ Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
 
 FileSystemContext::SparseFile::SparseFile() : file_(CreateTmpFile()) {}
 
-void FileSystemContext::SparseFile::Write(int64_t offset,
-                                          std::string_view chunk) {
-  WriteFile(file_.get(), offset, chunk);
+Task<> FileSystemContext::SparseFile::Write(ThreadPool* thread_pool,
+                                            int64_t offset,
+                                            std::string_view chunk) {
+  co_await WriteFile(thread_pool, file_.get(), offset, chunk);
   Range range{.offset = offset, .size = chunk.size()};
   if (ranges_.empty()) {
     ranges_.insert(range);
@@ -729,17 +746,17 @@ void FileSystemContext::SparseFile::Write(int64_t offset,
   }
 }
 
-std::optional<std::string> FileSystemContext::SparseFile::Read(
-    int64_t offset, size_t size) const {
+Task<std::optional<std::string>> FileSystemContext::SparseFile::Read(
+    ThreadPool* thread_pool, int64_t offset, size_t size) const {
   auto it = ranges_.upper_bound(
       Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
   if (ranges_.empty() || it == ranges_.begin()) {
-    return std::nullopt;
+    co_return std::nullopt;
   }
   if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
-    return ReadFile(file_.get(), offset, size);
+    co_return co_await ReadFile(thread_pool, file_.get(), offset, size);
   } else {
-    return std::nullopt;
+    co_return std::nullopt;
   }
 }
 

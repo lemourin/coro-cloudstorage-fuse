@@ -3,6 +3,7 @@
 #define FUSE_USE_VERSION 39
 #include <coro/util/function_traits.h>
 #include <coro/util/raii_utils.h>
+#include <event2/thread.h>
 #include <fuse.h>
 #include <fuse_lowlevel.h>
 
@@ -708,7 +709,10 @@ int Run(int argc, char** argv) {
     std::cerr << "Mountpoint not specified.\n";
     return -1;
   }
-  std::unique_ptr<event_base, EventBaseDeleter> event_base(event_base_new());
+  std::unique_ptr<event_base, EventBaseDeleter> event_base([] {
+    evthread_use_pthreads();
+    return event_base_new();
+  }());
   struct CallbackData {
     event fuse_event;
     event signal_event;
