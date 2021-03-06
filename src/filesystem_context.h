@@ -12,6 +12,7 @@
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
+#include <coro/http/http_server.h>
 #include <coro/promise.h>
 #include <coro/stdx/concepts.h>
 #include <coro/task.h>
@@ -45,6 +46,7 @@ class FileSystemContext {
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
                                   AccountListener>;
   using CloudProviderAccount = AccountManagerHandlerT::CloudProviderAccount;
+  using HttpServer = http::HttpServer<AccountManagerHandlerT>;
 
   struct AccountListener {
     void OnCreate(CloudProviderAccount*);
@@ -246,7 +248,6 @@ class FileSystemContext {
                                         stdx::stop_token);
 
   std::shared_ptr<CloudProviderAccount> GetAccount(std::string_view name) const;
-  Task<> Main();
 
   struct CacheKey {
     intptr_t account_id;
@@ -276,7 +277,6 @@ class FileSystemContext {
     }
   };
 
-  coro::Promise<void> quit_;
   event_base* event_base_;
   coro::util::EventLoop event_loop_;
   std::set<std::shared_ptr<CloudProviderAccount>> accounts_;
@@ -285,6 +285,8 @@ class FileSystemContext {
   Config config_;
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
+  CloudFactory<EventLoop, Http> cloud_factory_;
+  std::optional<HttpServer> http_server_;
   mutable ThreadPool thread_pool_;
 };
 

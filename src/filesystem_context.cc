@@ -2,7 +2,6 @@
 
 #include <coro/cloudstorage/abstract_cloud_provider.h>
 #include <coro/cloudstorage/cloud_exception.h>
-#include <coro/http/http_server.h>
 #include <coro/util/stop_token_or.h>
 
 #undef min
@@ -178,9 +177,12 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_(http::CurlHttp(event_base)),
       config_(config),
       content_cache_(config_.cache_size, SparseFileFactory{}),
-      thread_pool_(event_loop_) {
-  Invoke(Main());
-}
+      cloud_factory_(event_loop_, http_),
+      http_server_(std::make_optional<HttpServer>(
+          event_base_,
+          http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
+          AccountManagerHandlerT(cloud_factory_, AccountListener{this}))),
+      thread_pool_(event_loop_) {}
 
 FileSystemContext::~FileSystemContext() { Quit(); }
 
@@ -194,7 +196,10 @@ void FileSystemContext::Quit() {
   if (!quit_called_) {
     quit_called_ = true;
     Cancel();
-    quit_.SetValue();
+    Invoke([d = this]() -> Task<> {
+      co_await d->http_server_->Quit();
+      d->http_server_ = std::nullopt;
+    });
   }
 }
 
@@ -592,15 +597,6 @@ auto FileSystemContext::GetAccount(std::string_view name) const
   } else {
     return *it;
   }
-}
-
-Task<> FileSystemContext::Main() {
-  CloudFactory cloud_factory(event_loop_, http_);
-  http::HttpServer http_server(
-      event_base_, {.address = "0.0.0.0", .port = 12345},
-      AccountManagerHandlerT(cloud_factory, AccountListener{this}));
-  co_await quit_;
-  co_await http_server.Quit();
 }
 
 Task<> FileSystemContext::NewFileRead::operator()() {
