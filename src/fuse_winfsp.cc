@@ -18,40 +18,7 @@ const int kAllocationUnit = 1;
 
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
-
-std::wstring ToWideString(std::string_view string) {
-  int size = MultiByteToWideChar(CP_UTF8, 0, string.data(),
-                                 static_cast<int>(string.size()), nullptr, 0);
-  std::wstring result(size, 0);
-  MultiByteToWideChar(CP_UTF8, 0, string.data(),
-                      static_cast<int>(string.size()), result.data(), size);
-  return result;
-}
-
-std::string ToMultiByteString(std::wstring_view string) {
-  int size = WideCharToMultiByte(CP_UTF8, 0, string.data(),
-                                 static_cast<int>(string.size()), nullptr, 0,
-                                 nullptr, nullptr);
-  std::string result(size, 0);
-  WideCharToMultiByte(CP_UTF8, 0, string.data(),
-                      static_cast<int>(string.size()), result.data(), size,
-                      nullptr, nullptr);
-  return result;
-}
-
-std::string ToUnixPath(std::wstring_view string) {
-  std::string result = ToMultiByteString(string);
-  for (char& c : result) {
-    if (c == '\\') {
-      c = '/';
-    }
-  }
-  return result;
-}
-
-std::wstring ToWindowsPath(std::string_view string) {
-  return ToWideString(string);
-}
+using ::coro::util::AtScopeExit;
 
 NTSTATUS ToStatus(const CloudException& e) {
   switch (e.type()) {
@@ -98,6 +65,20 @@ void Check(NTSTATUS status) {
   if (status != S_OK) {
     throw FileSystemException(GetLastError());
   }
+}
+
+std::string ToUnixPath(const wchar_t* string) {
+  char* p;
+  Check(FspPosixMapWindowsToPosixPath(const_cast<wchar_t*>(string), &p));
+  auto guard = AtScopeExit([p] { free(p); });
+  return p;
+}
+
+std::wstring ToWindowsPath(const char* path) {
+  PWSTR p;
+  Check(FspPosixMapPosixToWindowsPath(path, &p));
+  auto guard = AtScopeExit([p] { free(p); });
+  return p;
 }
 
 class WinFspContext {
@@ -290,7 +271,7 @@ class WinFspContext {
         });
         for (const FileContext& d : data) {
           auto item = FileSystemContext::GetGenericItem(d);
-          std::wstring filename = ToWindowsPath(item.name);
+          std::wstring filename = ToWindowsPath(item.name.c_str());
           if (marker && filename <= marker) {
             continue;
           }
