@@ -71,7 +71,7 @@ Task<int64_t> GetFileSize(ThreadPool* thread_pool, std::FILE* file) {
     if (fseek(file, 0, SEEK_END) != 0) {
       throw std::runtime_error("fseek failed");
     }
-    return ftell(file);
+    return static_cast<int64_t>(ftell(file));
   });
 }
 
@@ -585,11 +585,11 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
   }
 
   auto* file = current_write.tmpfile.get();
+  auto file_size = co_await GetFileSize(&thread_pool_, file);
   auto item = co_await context.parent->provider().CreateFile(
       context.parent->item, current_write.new_name,
-      AbstractCloudProviderT::FileContent{
-          .data = ReadFile(&thread_pool_, file),
-          .size = co_await GetFileSize(&thread_pool_, file)},
+      AbstractCloudProviderT::FileContent{.data = ReadFile(&thread_pool_, file),
+                                          .size = file_size},
       stop_token_or.GetToken());
   http_.InvalidateCache();
   FileContext new_item{.item = Item(context.parent->account, std::move(item)),

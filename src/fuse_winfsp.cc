@@ -146,11 +146,9 @@ class WinFspContext {
         }()) {}
 
   ~WinFspContext() {
-    context_->RunOnEventLoop(
-        [this]() -> Task<> { co_return context_->Cancel(); });
+    context_->RunOnEventLoop([this] { context_->Cancel(); });
     dispatcher_.reset();
-    context_->RunOnEventLoop(
-        [this]() -> Task<> { co_return context_->Quit(); });
+    context_->RunOnEventLoop([this] { context_->Quit(); });
     event_loop_.get();
     filesystem_.reset();
   }

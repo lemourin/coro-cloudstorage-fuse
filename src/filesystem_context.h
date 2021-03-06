@@ -197,10 +197,15 @@ class FileSystemContext {
   FileSystemContext& operator=(FileSystemContext&&) = delete;
 
   template <typename F>
+  auto RunOnEventLoop(F func) {
+    return event_loop_.RunOnEventLoop(std::move(func));
+  }
+
+  template <typename F>
   auto Do(F func) {
     using ResultType = decltype(func().await_resume());
     std::promise<ResultType> result;
-    event_loop_.RunOnEventLoop([&result, &func]() -> Task<> {
+    RunOnEventLoop([&result, &func]() -> Task<> {
       try {
         result.set_value(co_await func());
       } catch (const std::exception&) {
