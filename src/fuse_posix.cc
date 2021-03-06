@@ -203,7 +203,7 @@ Task<FileContext> FindFile(FuseContext* context, const FuseFileContext& parent,
   throw CloudException(CloudException::Type::kNotFound);
 }
 
-struct stat ToStat(const FileSystemContext::GenericItem& item) {
+struct stat ToStat(const FileSystemContext::GenericItem& item, fuse_ino_t ino) {
   struct stat stat = {};
   stat.st_mode = (item.type == FileSystemContext::GenericItem::Type::kDirectory
                       ? S_IFDIR
@@ -211,6 +211,7 @@ struct stat ToStat(const FileSystemContext::GenericItem& item) {
                  0644;
   stat.st_size = item.size.value_or(0);
   stat.st_mtim.tv_sec = item.timestamp.value_or(0);
+  stat.st_ino = ino;
   return stat;
 }
 
@@ -218,8 +219,7 @@ fuse_entry_param CreateFuseEntry(FuseContext* context, fuse_ino_t parent,
                                  FileContext entry) {
   auto item = FileSystemContext::GetGenericItem(entry);
   fuse_entry_param fuse_entry = {};
-  fuse_entry.attr = ToStat(item);
-  fuse_entry.attr.st_ino = CreateNode(context, parent, std::move(entry));
+  fuse_entry.attr = ToStat(item, CreateNode(context, parent, std::move(entry)));
   context->file_context[fuse_entry.attr.st_ino].refcount++;
   fuse_entry.attr_timeout = kMetadataTimeout;
   fuse_entry.entry_timeout = kMetadataTimeout;
@@ -254,10 +254,10 @@ Task<> GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
   }
   struct stat stat {};
   if (ino == FUSE_ROOT_ID || it->second.context.item) {
-    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context));
-    stat.st_ino = ino;
+    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context), ino);
   } else {
     stat.st_mode = S_IFREG | 0644;
+    stat.st_ino = ino;
   }
   if (it->second.size) {
     stat.st_size = *it->second.size;
@@ -277,28 +277,43 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
     fuse_reply_err(req, ENOENT);
     co_return;
   }
-  auto* file_context =
-      fi ? reinterpret_cast<FuseFileContext*>(fi->fh) : &it->second;
-  auto item = FileSystemContext::GetGenericItem(file_context->context);
-  struct stat stat = ToStat(item);
+  struct stat stat = {};
+  if (it->second.context.item) {
+    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context), ino);
+  } else {
+    stat.st_mode = S_IFREG | 0644;
+    stat.st_ino = ino;
+  }
+  if (it->second.size) {
+    stat.st_size = *it->second.size;
+  }
   if (to_set & FUSE_SET_ATTR_SIZE) {
-    if (attr->st_size == 0) {
-      auto parent_it = context->file_context.find(file_context->parent);
+    auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
+    if (attr->st_size == 0 && it->second.context.item) {
+      auto parent_it = context->file_context.find(it->second.parent);
       if (parent_it == context->file_context.end()) {
         fuse_reply_err(req, ENOENT);
         co_return;
       }
       stdx::stop_source stop_source;
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-      file_context->context = co_await context->context.Flush(
-          co_await context->context.Create(parent_it->second.context, item.name,
-                                           /*size=*/0, stop_source.get_token()),
+      it->second.context = co_await context->context.Flush(
+          co_await context->context.Create(
+              parent_it->second.context,
+              FileSystemContext::GetGenericItem(it->second.context).name,
+              /*size=*/0, stop_source.get_token()),
           stop_source.get_token());
-      if (fi) {
-        it->second.context.item = file_context->context.item;
+      if (file_context) {
+        file_context->context.item = it->second.context.item;
       }
+    } else if (it->second.context.item) {
+      fuse_reply_err(req, EINVAL);
+      co_return;
     }
     it->second.size = attr->st_size;
+    if (file_context) {
+      file_context->size = attr->st_size;
+    }
   }
   fuse_reply_attr(req, &stat, kMetadataTimeout);
 }
@@ -433,8 +448,8 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     FileContext& entry = page.items[i];
     auto generic_item = FileSystemContext::GetGenericItem(entry);
     fuse_entry_param fuse_entry = {};
-    fuse_entry.attr = ToStat(generic_item);
-    fuse_entry.attr.st_ino = CreateNode(context, ino, std::move(entry));
+    fuse_entry.attr =
+        ToStat(generic_item, CreateNode(context, ino, std::move(entry)));
     fuse_entry.generation = 1;
     fuse_entry.ino = fuse_entry.attr.st_ino;
     fuse_entry.attr_timeout = kMetadataTimeout;
@@ -602,7 +617,8 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
       new FuseFileContext{.parent = parent, .flags = fi->flags, .name = name});
   context->file_context.emplace(entry.ino,
                                 FuseFileContext{.parent = file_context->parent,
-                                                .flags = file_context->flags});
+                                                .flags = file_context->flags,
+                                                .name = name});
   fi->fh = reinterpret_cast<uint64_t>(file_context.release());
   if (fuse_reply_create(req, &entry, fi) != 0) {
     delete reinterpret_cast<FuseFileContext*>(fi->fh);
@@ -634,6 +650,7 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   }
   co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
+  it->second.size = std::max<int64_t>(it->second.size.value_or(0), off + size);
   fuse_reply_write(req, size);
 }
 
