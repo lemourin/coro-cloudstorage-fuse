@@ -78,6 +78,9 @@ Task<int64_t> GetFileSize(ThreadPool* thread_pool, std::FILE* file) {
 Generator<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file) {
   const int kBufferSize = 4096;
   char buffer[kBufferSize];
+  if (co_await thread_pool->Invoke(fseek, file, 0, SEEK_SET) != 0) {
+    throw std::runtime_error("fseek failed");
+  }
   while (feof(file) == 0) {
     size_t size =
         co_await thread_pool->Invoke(fread, &buffer, 1, kBufferSize, file);
@@ -330,8 +333,12 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   if (!generic_item.size) {
     throw CloudException("size unknown");
   }
+  if (*generic_item.size == 0) {
+    co_return "";
+  }
   if (offset >= *generic_item.size) {
-    throw CloudException("invalid offset");
+    throw CloudException("invalid offset " + std::to_string(offset) +
+                         " >= " + std::to_string(*generic_item.size));
   }
   size = std::min<int64_t>(size, *generic_item.size - offset);
 
@@ -481,7 +488,10 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
                                              std::move(stop_token));
   }
   if (!item.current_streaming_write) {
-    if (item.item && item.item->GetGenericItem().size == 0 && item.parent) {
+    if (!item.item || !item.parent) {
+      throw CloudException("invalid item");
+    }
+    if (item.item->GetGenericItem().size == 0) {
       item.current_streaming_write = std::make_unique<CurrentStreamingWrite>(
           *item.parent, /*size=*/std::nullopt,
           item.item->GetGenericItem().name);
