@@ -70,15 +70,15 @@ void Check(NTSTATUS status) {
 std::string ToUnixPath(const wchar_t* string) {
   char* p;
   Check(FspPosixMapWindowsToPosixPath(const_cast<wchar_t*>(string), &p));
-  auto guard = AtScopeExit([p] { free(p); });
-  return p;
+  auto guard = AtScopeExit([p] { FspPosixDeletePath(p); });
+  return std::string(p);
 }
 
 std::wstring ToWindowsPath(const char* path) {
   PWSTR p;
   Check(FspPosixMapPosixToWindowsPath(path, &p));
-  auto guard = AtScopeExit([p] { free(p); });
-  return p;
+  auto guard = AtScopeExit([p] { FspPosixDeletePath(p); });
+  return std::wstring(p);
 }
 
 class WinFspContext {
