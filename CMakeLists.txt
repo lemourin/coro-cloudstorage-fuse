@@ -50,3 +50,5 @@ endif()
 if(MSVC)
     target_compile_options(coro-cloudstorage-fuse PRIVATE "/bigobj")
 endif()
+
+target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")

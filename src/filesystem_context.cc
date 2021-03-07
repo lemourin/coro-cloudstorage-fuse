@@ -44,6 +44,22 @@ std::vector<T> SplitString(const T& string, C delim) {
   return result;
 }
 
+int64_t Ftell(std::FILE* file) {
+#ifdef WIN32
+  return _ftelli64(file);
+#else
+  return static_cast<int64_t>(ftell(file));
+#endif
+}
+
+int Fseek(std::FILE* file, int64_t offset, int origin) {
+#ifdef WIN32
+  return _fseeki64(file, offset, origin);
+#else
+  return fseek(file, offset, origin);
+#endif
+}
+
 StopTokenOr GetToken(const FileSystemContext::FileContext& context,
                      stdx::stop_token stop_token) {
   if (!context.item) {
@@ -68,17 +84,17 @@ auto CreateTmpFile() {
 
 Task<int64_t> GetFileSize(ThreadPool* thread_pool, std::FILE* file) {
   return thread_pool->Invoke([=] {
-    if (fseek(file, 0, SEEK_END) != 0) {
+    if (Fseek(file, 0, SEEK_END) != 0) {
       throw std::runtime_error("fseek failed");
     }
-    return static_cast<int64_t>(ftell(file));
+    return Ftell(file);
   });
 }
 
 Generator<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file) {
   const int kBufferSize = 4096;
   char buffer[kBufferSize];
-  if (co_await thread_pool->Invoke(fseek, file, 0, SEEK_SET) != 0) {
+  if (co_await thread_pool->Invoke(Fseek, file, 0, SEEK_SET) != 0) {
     throw std::runtime_error("fseek failed");
   }
   while (feof(file) == 0) {
@@ -94,8 +110,8 @@ Generator<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file) {
 Task<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file,
                            int64_t offset, size_t size) {
   return thread_pool->Invoke([=] {
-    if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed");
+    if (Fseek(file, offset, SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed " + std::to_string(offset));
     }
     std::string buffer(size, 0);
     if (fread(buffer.data(), 1, size, file) != size) {
@@ -108,8 +124,9 @@ Task<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file,
 Task<> WriteFile(ThreadPool* thread_pool, std::FILE* file, int64_t offset,
                  std::string_view data) {
   return thread_pool->Invoke([=] {
-    if (fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed");
+    if (Fseek(file, offset, SEEK_SET) != 0) {
+      throw std::runtime_error("fseek failed " + std::to_string(offset) + " " +
+                               std::to_string(errno));
     }
     if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
       throw std::runtime_error("fwrite failed");
