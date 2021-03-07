@@ -48,7 +48,7 @@ int64_t Ftell(std::FILE* file) {
 #ifdef WIN32
   return _ftelli64(file);
 #else
-  return static_cast<int64_t>(ftell(file));
+  return ftello(file);
 #endif
 }
 
@@ -56,7 +56,7 @@ int Fseek(std::FILE* file, int64_t offset, int origin) {
 #ifdef WIN32
   return _fseeki64(file, offset, origin);
 #else
-  return fseek(file, offset, origin);
+  return fseeko(file, offset, origin);
 #endif
 }
 

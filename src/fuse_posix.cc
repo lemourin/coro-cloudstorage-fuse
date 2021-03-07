@@ -696,7 +696,7 @@ Task<> StatFs(fuse_req_t req, fuse_ino_t ino) {
     .f_ffree = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,
     .f_favail = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,
     .f_fsid = 4444, .f_flag = ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOSUID,
-    .f_namemax = std::numeric_limits<fsblkcnt_t>::max()
+    .f_namemax = std::numeric_limits<unsigned long>::max()
   };
   fuse_reply_statfs(req, &stat);
 }
