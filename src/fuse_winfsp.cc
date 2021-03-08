@@ -235,43 +235,43 @@ class WinFspContext {
     auto file_context = reinterpret_cast<FuseFileContext*>(file_context_ptr);
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-    context->RunOnEventLoop([=, bytes_transferred = *bytes_transferred,
-                             marker = marker_str
-                                          ? std::make_optional<std::wstring>(
-                                                marker_str)
-                                          : std::nullopt]() mutable -> Task<> {
-      FSP_FSCTL_TRANSACT_RSP response;
-      memset(&response, 0, sizeof(response));
-      response.Size = sizeof(response);
-      response.Kind = FspFsctlTransactQueryDirectoryKind;
-      response.Hint = hint;
-      response.IoStatus.Information = 0;
-      try {
-        union {
-          UINT8 data[FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
-                     MAX_PATH * sizeof(WCHAR)];
-          FSP_FSCTL_DIR_INFO d;
-        } entry_buffer;
-        FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
-        std::vector<FileContext> data;
-        FOR_CO_AWAIT(
-            std::vector<FileContext> & page_data,
-            context->ReadDirectory(file_context->context, stdx::stop_token())) {
-          for (auto& item : page_data) {
-            data.emplace_back(std::move(item));
-          }
-        }
-        auto [directory_name, file_name] = SplitPath(file_context->path);
-        FileContext parent = co_await context->GetFileContext(
-            directory_name, stdx::stop_token());
-        NTSTATUS result = S_OK;
-        if (FspFileSystemAcquireDirectoryBuffer(&file_context->directory_buffer,
-                                                marker.has_value(), &result)) {
-          auto guard = AtScopeExit([&] {
-            FspFileSystemReleaseDirectoryBuffer(
-                &file_context->directory_buffer);
-          });
-          if (!marker) {
+    auto marker = marker_str ? std::make_optional<std::wstring>(marker_str)
+                             : std::nullopt;
+    NTSTATUS status;
+    if (FspFileSystemAcquireDirectoryBuffer(&file_context->directory_buffer,
+                                            !marker, &status)) {
+      context->RunOnEventLoop([=, bytes_transferred = *bytes_transferred,
+                               marker = std::move(marker)]() mutable -> Task<> {
+        FSP_FSCTL_TRANSACT_RSP response;
+        memset(&response, 0, sizeof(response));
+        response.Size = sizeof(response);
+        response.Kind = FspFsctlTransactQueryDirectoryKind;
+        response.Hint = hint;
+        response.IoStatus.Information = 0;
+        try {
+          {
+            auto guard = AtScopeExit([&] {
+              FspFileSystemReleaseDirectoryBuffer(
+                  &file_context->directory_buffer);
+            });
+            union {
+              UINT8 data[FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                         MAX_PATH * sizeof(WCHAR)];
+              FSP_FSCTL_DIR_INFO d;
+            } entry_buffer;
+            FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
+            std::vector<FileContext> data;
+            FOR_CO_AWAIT(std::vector<FileContext> & page_data,
+                         context->ReadDirectory(file_context->context,
+                                                stdx::stop_token())) {
+              for (auto& item : page_data) {
+                data.emplace_back(std::move(item));
+              }
+            }
+            auto [directory_name, file_name] = SplitPath(file_context->path);
+            FileContext parent = co_await context->GetFileContext(
+                directory_name, stdx::stop_token());
+            NTSTATUS result = STATUS_SUCCESS;
             memcpy(entry->FileNameBuf, L".", sizeof(wchar_t));
             memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
             ToFileInfo(FileSystemContext::GetGenericItem(file_context->context),
@@ -280,52 +280,62 @@ class WinFspContext {
                           static_cast<UINT16>(sizeof(wchar_t));
             FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
                                              entry, &result);
-          }
-          if (file_context->context.item && (!marker || *marker == L".")) {
-            memcpy(entry->FileNameBuf, L"..", 2 * sizeof(wchar_t));
-            memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
-            ToFileInfo(FileSystemContext::GetGenericItem(parent),
-                       &entry->FileInfo);
-            entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
-                          static_cast<UINT16>(2 * sizeof(wchar_t));
-            FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
-                                             entry, &result);
-          }
-          for (const FileContext& d : data) {
-            auto item = FileSystemContext::GetGenericItem(d);
-            std::wstring filename = ToWindowsPath(item.name.c_str());
-            if (filename.length() > MAX_PATH) {
-              continue;
+            Check(result);
+            if (file_context->context.item) {
+              memcpy(entry->FileNameBuf, L"..", 2 * sizeof(wchar_t));
+              memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
+              ToFileInfo(FileSystemContext::GetGenericItem(parent),
+                         &entry->FileInfo);
+              entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                            static_cast<UINT16>(2 * sizeof(wchar_t));
+              FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                               entry, &result);
+              Check(result);
             }
-            memcpy(entry->FileNameBuf, filename.c_str(),
-                   filename.length() * sizeof(wchar_t));
-            memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
-            ToFileInfo(item, &entry->FileInfo);
-            entry->Size =
-                FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
-                static_cast<UINT16>(filename.length() * sizeof(wchar_t));
-            FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
-                                             entry, &result);
+            for (const FileContext& d : data) {
+              auto item = FileSystemContext::GetGenericItem(d);
+              std::wstring filename = ToWindowsPath(item.name.c_str());
+              if (filename.length() > MAX_PATH) {
+                continue;
+              }
+              memcpy(entry->FileNameBuf, filename.c_str(),
+                     filename.length() * sizeof(wchar_t));
+              memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
+              ToFileInfo(item, &entry->FileInfo);
+              entry->Size =
+                  FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                  static_cast<UINT16>(filename.length() * sizeof(wchar_t));
+              FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                               entry, &result);
+              Check(result);
+            }
           }
+          FspFileSystemReadDirectoryBuffer(&file_context->directory_buffer,
+                                           marker ? marker->data() : nullptr,
+                                           buffer, buffer_length,
+                                           &bytes_transferred);
+          response.IoStatus.Status = STATUS_SUCCESS;
+          response.IoStatus.Information = bytes_transferred;
+          FspFileSystemSendResponse(fs, &response);
+        } catch (const CloudException& e) {
+          response.IoStatus.Status = ToStatus(e);
+          FspFileSystemSendResponse(fs, &response);
+          std::cerr << "ERROR " << e.what() << "\n";
+        } catch (const std::exception& e) {
+          response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
+          FspFileSystemSendResponse(fs, &response);
+          std::cerr << "ERROR " << e.what() << "\n";
         }
-        FspFileSystemReadDirectoryBuffer(
-            &file_context->directory_buffer, marker ? marker->data() : nullptr,
-            buffer, buffer_length, &bytes_transferred);
-        Check(result);
-        response.IoStatus.Status = STATUS_SUCCESS;
-        response.IoStatus.Information = bytes_transferred;
-        FspFileSystemSendResponse(fs, &response);
-      } catch (const CloudException& e) {
-        response.IoStatus.Status = ToStatus(e);
-        FspFileSystemSendResponse(fs, &response);
-        std::cerr << "ERROR " << e.what() << "\n";
-      } catch (const std::exception& e) {
-        response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
-        FspFileSystemSendResponse(fs, &response);
-        std::cerr << "ERROR " << e.what() << "\n";
-      }
-    });
-    return STATUS_PENDING;
+      });
+      return STATUS_PENDING;
+    } else if (status == STATUS_SUCCESS) {
+      FspFileSystemReadDirectoryBuffer(&file_context->directory_buffer,
+                                       marker_str, buffer, buffer_length,
+                                       bytes_transferred);
+      return STATUS_SUCCESS;
+    } else {
+      return status;
+    }
   }
 
   static NTSTATUS Create(FSP_FILE_SYSTEM* fs, PWSTR filename,
