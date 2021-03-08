@@ -230,13 +230,16 @@ class WinFspContext {
   }
 
   static NTSTATUS ReadDirectory(FSP_FILE_SYSTEM* fs, PVOID file_context_ptr,
-                                PWSTR pattern, PWSTR marker, PVOID buffer,
+                                PWSTR pattern, PWSTR marker_str, PVOID buffer,
                                 ULONG buffer_length, PULONG bytes_transferred) {
     auto file_context = reinterpret_cast<FuseFileContext*>(file_context_ptr);
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
-    context->RunOnEventLoop([=, bytes_transferred =
-                                    *bytes_transferred]() mutable -> Task<> {
+    context->RunOnEventLoop([=, bytes_transferred = *bytes_transferred,
+                             marker = marker_str
+                                          ? std::make_optional<std::wstring>(
+                                                marker_str)
+                                          : std::nullopt]() mutable -> Task<> {
       FSP_FSCTL_TRANSACT_RSP response;
       memset(&response, 0, sizeof(response));
       response.Size = sizeof(response);
@@ -258,39 +261,56 @@ class WinFspContext {
             data.emplace_back(std::move(item));
           }
         }
-        NTSTATUS result;
-        if (!FspFileSystemAcquireDirectoryBuffer(
-                &file_context->directory_buffer, marker == nullptr, &result)) {
-          response.IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
-          FspFileSystemSendResponse(fs, &response);
-          co_return;
-        }
-        std::sort(data.begin(), data.end(), [](const auto& d1, const auto& d2) {
-          return FileSystemContext::GetGenericItem(d1).name <
-                 FileSystemContext::GetGenericItem(d2).name;
-        });
-        for (const FileContext& d : data) {
-          auto item = FileSystemContext::GetGenericItem(d);
-          std::wstring filename = ToWindowsPath(item.name.c_str());
-          if (marker && filename <= marker) {
-            continue;
+        auto [directory_name, file_name] = SplitPath(file_context->path);
+        FileContext parent = co_await context->GetFileContext(
+            directory_name, stdx::stop_token());
+        NTSTATUS result = S_OK;
+        if (FspFileSystemAcquireDirectoryBuffer(&file_context->directory_buffer,
+                                                marker.has_value(), &result)) {
+          auto guard = AtScopeExit([&] {
+            FspFileSystemReleaseDirectoryBuffer(
+                &file_context->directory_buffer);
+          });
+          if (!marker) {
+            memcpy(entry->FileNameBuf, L".", sizeof(wchar_t));
+            memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
+            ToFileInfo(FileSystemContext::GetGenericItem(file_context->context),
+                       &entry->FileInfo);
+            entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                          static_cast<UINT16>(sizeof(wchar_t));
+            FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                             entry, &result);
           }
-          memcpy(entry->FileNameBuf, filename.c_str(),
-                 filename.length() * sizeof(wchar_t));
-          memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
-          ToFileInfo(item, &entry->FileInfo);
-          entry->Size =
-              FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
-              static_cast<UINT16>(filename.length() * sizeof(wchar_t));
-          if (!FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
-                                                entry, &result)) {
-            break;
+          if (file_context->context.item && (!marker || *marker == L".")) {
+            memcpy(entry->FileNameBuf, L"..", 2 * sizeof(wchar_t));
+            memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
+            ToFileInfo(FileSystemContext::GetGenericItem(parent),
+                       &entry->FileInfo);
+            entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                          static_cast<UINT16>(2 * sizeof(wchar_t));
+            FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                             entry, &result);
+          }
+          int cnt = 0;
+          for (const FileContext& d : data) {
+            auto item = FileSystemContext::GetGenericItem(d);
+            std::wstring filename = ToWindowsPath(item.name.c_str());
+            cnt++;
+            memcpy(entry->FileNameBuf, filename.c_str(),
+                   filename.length() * sizeof(wchar_t));
+            memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
+            ToFileInfo(item, &entry->FileInfo);
+            entry->Size =
+                FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                static_cast<UINT16>(filename.length() * sizeof(wchar_t));
+            FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
+                                             entry, &result);
           }
         }
-        FspFileSystemReleaseDirectoryBuffer(&file_context->directory_buffer);
-        FspFileSystemReadDirectoryBuffer(&file_context->directory_buffer,
-                                         marker, buffer, buffer_length,
-                                         &bytes_transferred);
+        FspFileSystemReadDirectoryBuffer(
+            &file_context->directory_buffer, marker ? marker->data() : nullptr,
+            buffer, buffer_length, &bytes_transferred);
+        Check(result);
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = bytes_transferred;
         FspFileSystemSendResponse(fs, &response);
@@ -378,11 +398,12 @@ class WinFspContext {
     return context->Do([&]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(file->path);
-        file->context = co_await context->Flush(
-            co_await context->Create(co_await context->GetFileContext(
-                                         directory_name, stdx::stop_token()),
-                                     file_name, /*size=*/0, stdx::stop_token()),
-            stdx::stop_token());
+        auto parent = co_await context->GetFileContext(directory_name,
+                                                       stdx::stop_token());
+        auto new_item = co_await context->Create(
+            std::move(parent), file_name, /*size=*/0, stdx::stop_token());
+        file->context =
+            co_await context->Flush(std::move(new_item), stdx::stop_token());
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
@@ -570,11 +591,10 @@ class WinFspContext {
               source_item->context, destination_file_name, stdx::stop_token());
         }
         if (source_directory_name != destination_directory_name) {
+          auto destination = co_await context->GetFileContext(
+              destination_directory_name, stdx::stop_token());
           source_item->context = co_await context->Move(
-              new_item,
-              co_await context->GetFileContext(destination_directory_name,
-                                               stdx::stop_token()),
-              stdx::stop_token());
+              new_item, std::move(destination), stdx::stop_token());
         }
 
         co_return STATUS_SUCCESS;
