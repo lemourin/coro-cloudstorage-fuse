@@ -291,11 +291,12 @@ class WinFspContext {
             FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
                                              entry, &result);
           }
-          int cnt = 0;
           for (const FileContext& d : data) {
             auto item = FileSystemContext::GetGenericItem(d);
             std::wstring filename = ToWindowsPath(item.name.c_str());
-            cnt++;
+            if (filename.length() > MAX_PATH) {
+              continue;
+            }
             memcpy(entry->FileNameBuf, filename.c_str(),
                    filename.length() * sizeof(wchar_t));
             memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
