@@ -326,17 +326,25 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
         account->provider));
   }
   VolumeData total = {.space_used = 0, .space_total = 0};
+  std::optional<std::exception_ptr> exception;
   for (auto& d : tasks) {
-    auto data = co_await std::move(d);
-    total.space_used += data.space_used;
-    if (data.space_total && total.space_total) {
-      *total.space_total += *data.space_total;
-    } else {
-      total.space_total = std::nullopt;
-      break;
+    try {
+      auto data = co_await std::move(d);
+      total.space_used += data.space_used;
+      if (data.space_total && total.space_total) {
+        *total.space_total += *data.space_total;
+      } else {
+        total.space_total = std::nullopt;
+      }
+    } catch (...) {
+      exception = std::current_exception();
     }
   }
-  co_return total;
+  if (exception) {
+    std::rethrow_exception(*exception);
+  } else {
+    co_return total;
+  }
 }
 
 Task<std::string> FileSystemContext::Read(const FileContext& context,
