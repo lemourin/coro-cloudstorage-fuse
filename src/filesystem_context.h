@@ -170,7 +170,7 @@ class FileSystemContext {
     int64_t current_offset_ = 0;
     std::unique_ptr<FILE, FileDeleter> buffer_;
     std::vector<Range> ranges_;
-    Task<AbstractCloudProviderT::Item> create_file_task_;
+    Promise<AbstractCloudProviderT::Item> item_promise_;
   };
 
   struct FileContext {
@@ -208,7 +208,7 @@ class FileSystemContext {
     RunOnEventLoop([&result, &func]() -> Task<> {
       try {
         result.set_value(co_await func());
-      } catch (const std::exception&) {
+      } catch (...) {
         result.set_exception(std::current_exception());
       }
     });
