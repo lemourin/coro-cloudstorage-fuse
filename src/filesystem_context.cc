@@ -309,9 +309,9 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
 
 auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
     -> Task<VolumeData> {
-  std::vector<Task<VolumeData>> tasks;
-  for (const auto& account : accounts_) {
-    tasks.emplace_back(std::visit(
+  auto get_volume_data =
+      [stop_token](const auto& account) mutable -> Task<VolumeData> {
+    co_return co_await std::visit(
         [&](auto& provider) -> Task<VolumeData> {
           StopTokenOr stop_token_or(account->stop_source.get_token(),
                                     std::move(stop_token));
@@ -324,7 +324,11 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
             co_return VolumeData{.space_used = 0, .space_total = 0};
           }
         },
-        account->provider));
+        account->provider);
+  };
+  std::vector<Task<VolumeData>> tasks;
+  for (const auto& account : accounts_) {
+    tasks.emplace_back(get_volume_data(account));
   }
   VolumeData total = {.space_used = 0, .space_total = 0};
   for (const auto& data : co_await WhenAll(std::move(tasks))) {
