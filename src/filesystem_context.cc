@@ -394,22 +394,37 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
       (*it)->semaphore.SetValue();
     }
   });
-  if (current_read.current_offset != offset) {
+  auto start_read = [&](int64_t offset) -> Task<> {
     std::cerr << "START READ " << offset << " "
               << context.item->GetGenericItem().name << "\n";
-    current_read.chunk.clear();
-    current_read.current_offset = offset;
     current_read.generator = context.item->provider().GetFileContent(
         context.item->item, http::Range{.start = offset},
         current_read.stop_token_data->stop_token_or.GetToken());
     current_read.it = co_await InterruptibleAwait(
         current_read.generator.begin(), stop_token_or.GetToken());
+    current_read.current_offset = offset;
+    current_read.chunk.clear();
+  };
+  if (current_read.current_offset != offset) {
+    co_await start_read(offset);
   }
-  std::string chunk = std::exchange(current_read.chunk, "");
+  std::string chunk = std::move(std::exchange(current_read.chunk, ""));
   while (static_cast<int64_t>(chunk.size()) < size &&
          *current_read.it != std::end(current_read.generator)) {
+    current_read.current_offset += (**current_read.it).size();
     chunk += std::move(**current_read.it);
-    co_await InterruptibleAwait(++*current_read.it, stop_token_or.GetToken());
+    std::optional<std::exception_ptr> exception;
+    try {
+      co_await InterruptibleAwait(++*current_read.it, stop_token_or.GetToken());
+    } catch (const InterruptedException&) {
+      throw;
+    } catch (...) {
+      exception = std::current_exception();
+    }
+    if (exception) {
+      current_read.current_offset = INT64_MAX;
+      co_await start_read(offset + chunk.size());
+    }
   }
   current_read.current_offset = offset + size;
   if (static_cast<int64_t>(chunk.size()) > size) {
