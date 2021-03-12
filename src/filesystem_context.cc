@@ -245,21 +245,19 @@ auto FileSystemContext::GetFileContext(std::string path,
   }
   StopTokenOr stop_token_or(account->stop_source.get_token(),
                             std::move(stop_token));
-  co_return co_await std::visit(
-      [&](auto& d) -> Task<FileContext> {
-        auto it = provider_path.find_last_of('/', provider_path.length() - 2);
-        auto item = Item(account, co_await d.GetItemByPath(
-                                      provider_path, stop_token_or.GetToken()));
-        std::optional<Item> parent;
-        if (it != std::string::npos) {
-          parent = Item(account,
-                        co_await d.GetItemByPath(provider_path.substr(0, it),
+  auto get_item_by_path = [&](auto& d) -> Task<FileContext> {
+    auto it = provider_path.find_last_of('/', provider_path.length() - 2);
+    auto item = Item(account, co_await d.GetItemByPath(
+                                  provider_path, stop_token_or.GetToken()));
+    std::optional<Item> parent;
+    if (it != std::string::npos) {
+      parent =
+          Item(account, co_await d.GetItemByPath(provider_path.substr(0, it),
                                                  stop_token_or.GetToken()));
-        }
-        co_return FileContext{.item = std::move(item),
-                              .parent = std::move(parent)};
-      },
-      account->provider);
+    }
+    co_return FileContext{.item = std::move(item), .parent = std::move(parent)};
+  };
+  co_return co_await std::visit(get_item_by_path, account->provider);
 }
 
 auto FileSystemContext::ReadDirectory(const FileContext& context,
@@ -281,17 +279,14 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
   if (!context.item) {
     std::vector<FileContext> result;
     for (auto account : accounts_) {
-      auto root = co_await std::visit(
-          [&](auto& provider) -> Task<FileContext> {
-            StopTokenOr stop_token_or(stop_token,
-                                      account->stop_source.get_token());
-            auto directory =
-                co_await provider.GetRoot(stop_token_or.GetToken());
-            directory.name = account->id;
-            co_return FileContext{.item = Item(account, std::move(directory))};
-          },
-          account->provider);
-      result.emplace_back(std::move(root));
+      auto get_root = [&](auto& provider) -> Task<FileContext> {
+        StopTokenOr stop_token_or(stop_token, account->stop_source.get_token());
+        auto directory = co_await provider.GetRoot(stop_token_or.GetToken());
+        directory.name = account->id;
+        co_return FileContext{.item = Item(account, std::move(directory))};
+      };
+      result.emplace_back(
+          co_await std::visit(std::move(get_root), account->provider));
     }
     co_return PageData{.items = std::move(result)};
   }
@@ -311,20 +306,18 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
     -> Task<VolumeData> {
   auto get_volume_data =
       [stop_token](const auto& account) mutable -> Task<VolumeData> {
-    co_return co_await std::visit(
-        [&](auto& provider) -> Task<VolumeData> {
-          StopTokenOr stop_token_or(account->stop_source.get_token(),
-                                    std::move(stop_token));
-          auto data =
-              co_await provider.GetGeneralData(stop_token_or.GetToken());
-          if constexpr (HasUsageData<decltype(data)>) {
-            co_return VolumeData{.space_used = data.space_used,
-                                 .space_total = data.space_total};
-          } else {
-            co_return VolumeData{.space_used = 0, .space_total = 0};
-          }
-        },
-        account->provider);
+    auto get_volume_data = [&](auto& provider) -> Task<VolumeData> {
+      StopTokenOr stop_token_or(account->stop_source.get_token(),
+                                std::move(stop_token));
+      auto data = co_await provider.GetGeneralData(stop_token_or.GetToken());
+      if constexpr (HasUsageData<decltype(data)>) {
+        co_return VolumeData{.space_used = data.space_used,
+                             .space_total = data.space_total};
+      } else {
+        co_return VolumeData{.space_used = 0, .space_total = 0};
+      }
+    };
+    co_return co_await std::visit(get_volume_data, account->provider);
   };
   std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
@@ -348,7 +341,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   if (!context.item) {
     throw CloudException("not a file");
   }
-  auto stop_token_or = GetToken(context, stop_token);
+  auto stop_token_or = GetToken(context, std::move(stop_token));
   auto generic_item = GetGenericItem(context);
   if (!generic_item.size) {
     throw CloudException("size unknown");
@@ -415,7 +408,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     chunk += std::move(**current_read.it);
     std::optional<std::exception_ptr> exception;
     try {
-      co_await InterruptibleAwait(++*current_read.it, stop_token_or.GetToken());
+      auto task = ++*current_read.it;
+      co_await InterruptibleAwait(task, stop_token_or.GetToken());
     } catch (const InterruptedException&) {
       throw;
     } catch (...) {

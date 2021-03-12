@@ -39,7 +39,10 @@ off_t EncodeReadDirToken(ReadDirToken token) {
 
 struct Flush {
   struct Callback {
-    Task<> operator()() const { co_await* done; }
+    Task<> operator()() const {
+      auto& ref = *done;
+      co_await ref;
+    }
     Promise<void>* done;
   };
 
