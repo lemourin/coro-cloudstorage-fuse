@@ -358,10 +358,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   auto cache_file = co_await content_cache_.Get(GetCacheKey(context),
                                                 stop_token_or.GetToken());
   if (!context.current_read) {
-    context.current_read = CurrentRead{
-        .current_offset = INT64_MAX,
-        .stop_token_data =
-            std::make_unique<StopTokenData>(context.item->stop_token())};
+    context.current_read = CurrentRead{.current_offset = INT64_MAX};
   }
   CurrentRead& current_read = *context.current_read;
   if (std::optional<std::string> chunk = co_await cache_file->Read(
@@ -390,6 +387,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   auto start_read = [&](int64_t offset) -> Task<> {
     std::cerr << "START READ " << offset << " "
               << context.item->GetGenericItem().name << "\n";
+    current_read.stop_token_data =
+        std::make_unique<StopTokenData>(context.item->stop_token());
     current_read.generator = context.item->provider().GetFileContent(
         context.item->item, http::Range{.start = offset},
         current_read.stop_token_data->stop_token_or.GetToken());
