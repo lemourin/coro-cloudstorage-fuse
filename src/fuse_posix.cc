@@ -806,7 +806,7 @@ int Run(int argc, char** argv) {
     CheckEvent(event_add(&cb_data.fuse_event, nullptr));
 
     CheckEvent(event_assign(
-        &cb_data.signal_event, event_base.get(), SIGINT, EV_SIGNAL,
+        &cb_data.signal_event, event_base.get(), SIGINT | SIGTERM, EV_SIGNAL,
         [](evutil_socket_t fd, short, void* d) {
           auto data = reinterpret_cast<CallbackData*>(d);
           if (!fuse_session_exited(data->session)) {
