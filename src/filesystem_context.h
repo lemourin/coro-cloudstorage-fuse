@@ -10,6 +10,7 @@
 #include <coro/cloudstorage/providers/google_drive.h>
 #include <coro/cloudstorage/providers/mega.h>
 #include <coro/cloudstorage/providers/one_drive.h>
+#include <coro/cloudstorage/providers/pcloud.h>
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/http/cache_http.h>
@@ -42,7 +43,7 @@ class FileSystemContext {
   struct AccountListener;
 
   using CloudProviders = coro::util::TypeList<GoogleDrive, Mega, OneDrive,
-                                              Dropbox, Box, YandexDisk>;
+                                              Dropbox, Box, YandexDisk, PCloud>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
