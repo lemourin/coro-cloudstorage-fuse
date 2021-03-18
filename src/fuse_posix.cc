@@ -22,6 +22,7 @@ using FileContext = FileSystemContext::FileContext;
 
 constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
 constexpr int kMetadataTimeout = 10;
+constexpr int kHandledSignals[] = {SIGINT, SIGTERM};
 
 struct ReadDirToken {
   off_t page_index;
@@ -735,7 +736,7 @@ int Run(int argc, char** argv) {
   }());
   struct CallbackData {
     event fuse_event;
-    event signal_event;
+    event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])];
     FuseContext* context;
     fuse_session* session;
   } cb_data = {};
@@ -797,7 +798,9 @@ int Run(int argc, char** argv) {
 
           if (fuse_session_exited(data->session)) {
             event_del(&data->fuse_event);
-            event_del(&data->signal_event);
+            for (event& e : data->signal_event) {
+              event_del(&e);
+            }
             data->context->context.Quit();
             return;
           }
@@ -805,19 +808,24 @@ int Run(int argc, char** argv) {
         &cb_data));
     CheckEvent(event_add(&cb_data.fuse_event, nullptr));
 
-    CheckEvent(event_assign(
-        &cb_data.signal_event, event_base.get(), SIGINT | SIGTERM, EV_SIGNAL,
-        [](evutil_socket_t fd, short, void* d) {
-          auto data = reinterpret_cast<CallbackData*>(d);
-          if (!fuse_session_exited(data->session)) {
-            fuse_session_exit(data->session);
-            event_del(&data->fuse_event);
-            event_del(&data->signal_event);
-            data->context->context.Quit();
-          }
-        },
-        &cb_data));
-    CheckEvent(event_add(&cb_data.signal_event, nullptr));
+    auto on_signal = [](evutil_socket_t fd, short, void* d) {
+      auto data = reinterpret_cast<CallbackData*>(d);
+      if (!fuse_session_exited(data->session)) {
+        fuse_session_exit(data->session);
+        event_del(&data->fuse_event);
+        for (event& e : data->signal_event) {
+          event_del(&e);
+        }
+        data->context->context.Quit();
+      }
+    };
+    for (size_t i = 0; i < sizeof(kHandledSignals) / sizeof(kHandledSignals[0]);
+         i++) {
+      CheckEvent(event_assign(&cb_data.signal_event[i], event_base.get(),
+                              kHandledSignals[i], EV_SIGNAL, on_signal,
+                              &cb_data));
+      CheckEvent(event_add(&cb_data.signal_event[i], nullptr));
+    }
     if (event_base_dispatch(event_base.get()) != 1) {
       throw std::runtime_error("event_base_dispatch failed");
     }
