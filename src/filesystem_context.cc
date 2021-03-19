@@ -405,10 +405,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     auto time_to_first_byte = context.item->GetAccount()->GetTimeToFirstByte();
     auto download_speed = context.item->GetAccount()->GetDownloadSpeed();
     if (time_to_first_byte && download_speed &&
-        offset - current_read.current_offset < 10 * 1024 * 1024 &&
         (offset - current_read.current_offset) / *download_speed <=
             *time_to_first_byte) {
-      size += offset - current_read.current_offset;
       offset = current_read.current_offset;
     }
   }
@@ -416,11 +414,25 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     co_await start_read(offset);
   }
   auto time = std::chrono::system_clock::now();
-  std::string chunk = std::move(std::exchange(current_read.chunk, ""));
+  std::string chunk;
+  auto append = [&](std::string current_chunk) -> Task<> {
+    co_await cache_file->Write(&thread_pool_, current_read.current_offset,
+                               current_chunk);
+    int64_t chunk_size = static_cast<int64_t>(current_chunk.size());
+    if (current_read.current_offset + chunk_size - 1 >= requested_offset &&
+        current_read.current_offset < requested_offset) {
+      chunk += std::move(current_chunk)
+                   .substr(static_cast<size_t>(requested_offset -
+                                               current_read.current_offset));
+    } else if (current_read.current_offset >= requested_offset) {
+      chunk += std::move(current_chunk);
+    }
+    current_read.current_offset += chunk_size;
+  };
+  co_await append(std::move(std::exchange(current_read.chunk, "")));
   while (static_cast<int64_t>(chunk.size()) < size &&
          *current_read.it != std::end(current_read.generator)) {
-    current_read.current_offset += (**current_read.it).size();
-    chunk += std::move(**current_read.it);
+    co_await append(std::move(**current_read.it));
     std::optional<std::exception_ptr> exception;
     try {
       auto task = ++*current_read.it;
@@ -432,21 +444,18 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     }
     if (exception) {
       current_read.current_offset = INT64_MAX;
-      co_await start_read(offset + chunk.size());
+      co_await start_read(requested_offset + chunk.size());
     }
   }
   context.item->GetAccount()->RegisterDownloadSpeed(
       std::chrono::system_clock::now() - time, size);
-  current_read.current_offset = offset + size;
+  current_read.current_offset = requested_offset + size;
   if (static_cast<int64_t>(chunk.size()) > size) {
     current_read.chunk =
         std::string(chunk.begin() + static_cast<size_t>(size), chunk.end());
     chunk.resize(static_cast<size_t>(size));
   }
-  co_await cache_file->Write(&thread_pool_, offset, chunk);
-  chunk.erase(chunk.begin(),
-              chunk.begin() + static_cast<size_t>(requested_offset - offset));
-  co_return std::move(chunk);
+  co_return chunk;
 }
 
 auto FileSystemContext::Rename(const FileContext& context,
