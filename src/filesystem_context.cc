@@ -160,19 +160,18 @@ bool IsInside(const FileSystemContext::Range& r1,
 auto FileSystemContext::Item::provider() const -> AbstractCloudProviderT {
   return std::visit(
       [](auto& provider) { return AbstractCloudProviderT(&provider); },
-      GetAccount()->provider);
+      GetAccount()->provider());
 }
 
 stdx::stop_token FileSystemContext::Item::stop_token() const {
-  return GetAccount()->stop_source.get_token();
+  return GetAccount()->stop_source().get_token();
 }
 
 auto FileSystemContext::Item::GetGenericItem() const -> GenericItem {
   return AbstractCloudProviderT::ToGenericItem(item);
 }
 
-auto FileSystemContext::Item::GetAccount() const
-    -> std::shared_ptr<CloudProviderAccount> {
+auto FileSystemContext::Item::GetAccount() const -> std::shared_ptr<Account> {
   auto acc = account.lock();
   if (!acc) {
     throw CloudException(CloudException::Type::kNotFound);
@@ -181,14 +180,14 @@ auto FileSystemContext::Item::GetAccount() const
 }
 
 void FileSystemContext::AccountListener::OnCreate(CloudProviderAccount* d) {
-  context->accounts_.insert(
-      std::shared_ptr<CloudProviderAccount>(d, [](auto) {}));
+  context->accounts_.emplace_back(std::make_shared<Account>(d));
   std::cerr << "CREATED " << d->id << "\n";
 }
 
 void FileSystemContext::AccountListener::OnDestroy(CloudProviderAccount* d) {
-  context->accounts_.erase(
-      std::shared_ptr<CloudProviderAccount>(d, [](auto) {}));
+  context->accounts_.erase(std::find_if(
+      context->accounts_.begin(), context->accounts_.end(),
+      [d](const auto& account) { return account->account() == d; }));
   std::cerr << "REMOVED " << d->id << "\n";
 }
 
@@ -209,7 +208,7 @@ FileSystemContext::~FileSystemContext() { Quit(); }
 
 void FileSystemContext::Cancel() {
   for (const auto& account : accounts_) {
-    account->stop_source.request_stop();
+    account->stop_source().request_stop();
   }
 }
 
@@ -243,7 +242,7 @@ auto FileSystemContext::GetFileContext(std::string path,
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
-  StopTokenOr stop_token_or(account->stop_source.get_token(),
+  StopTokenOr stop_token_or(account->stop_source().get_token(),
                             std::move(stop_token));
   auto get_item_by_path = [&](auto& d) -> Task<FileContext> {
     auto it = provider_path.find_last_of('/', provider_path.length() - 2);
@@ -257,7 +256,7 @@ auto FileSystemContext::GetFileContext(std::string path,
     }
     co_return FileContext{.item = std::move(item), .parent = std::move(parent)};
   };
-  co_return co_await std::visit(get_item_by_path, account->provider);
+  co_return co_await std::visit(get_item_by_path, account->provider());
 }
 
 auto FileSystemContext::ReadDirectory(const FileContext& context,
@@ -278,15 +277,16 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
     -> Task<PageData> {
   if (!context.item) {
     std::vector<FileContext> result;
-    for (auto account : accounts_) {
+    for (const auto& account : accounts_) {
       auto get_root = [&](auto& provider) -> Task<FileContext> {
-        StopTokenOr stop_token_or(stop_token, account->stop_source.get_token());
+        StopTokenOr stop_token_or(stop_token,
+                                  account->stop_source().get_token());
         auto directory = co_await provider.GetRoot(stop_token_or.GetToken());
-        directory.name = account->id;
+        directory.name = account->id();
         co_return FileContext{.item = Item(account, std::move(directory))};
       };
       result.emplace_back(
-          co_await std::visit(std::move(get_root), account->provider));
+          co_await std::visit(std::move(get_root), account->provider()));
     }
     co_return PageData{.items = std::move(result)};
   }
@@ -307,7 +307,7 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
   auto get_volume_data =
       [stop_token](const auto& account) mutable -> Task<VolumeData> {
     auto get_volume_data = [&](auto& provider) -> Task<VolumeData> {
-      StopTokenOr stop_token_or(account->stop_source.get_token(),
+      StopTokenOr stop_token_or(account->stop_source().get_token(),
                                 std::move(stop_token));
       auto data = co_await provider.GetGeneralData(stop_token_or.GetToken());
       if constexpr (HasUsageData<decltype(data)>) {
@@ -317,7 +317,7 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
         co_return VolumeData{.space_used = 0, .space_total = 0};
       }
     };
-    co_return co_await std::visit(get_volume_data, account->provider);
+    co_return co_await std::visit(get_volume_data, account->provider());
   };
   std::vector<Task<VolumeData>> tasks;
   for (const auto& account : accounts_) {
@@ -392,14 +392,30 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     current_read.generator = context.item->provider().GetFileContent(
         context.item->item, http::Range{.start = offset},
         current_read.stop_token_data->stop_token_or.GetToken());
+    auto time = std::chrono::system_clock::now();
     current_read.it = co_await InterruptibleAwait(
         current_read.generator.begin(), stop_token_or.GetToken());
+    context.item->GetAccount()->RegisterTimeToFirstByte(
+        std::chrono::system_clock::now() - time);
     current_read.current_offset = offset;
     current_read.chunk.clear();
   };
-  if (current_read.current_offset != offset) {
+  int64_t requested_offset = offset;
+  if (offset > current_read.current_offset) {
+    auto time_to_first_byte = context.item->GetAccount()->GetTimeToFirstByte();
+    auto download_speed = context.item->GetAccount()->GetDownloadSpeed();
+    if (time_to_first_byte && download_speed &&
+        offset - current_read.current_offset < 10 * 1024 * 1024 &&
+        (offset - current_read.current_offset) / *download_speed <=
+            *time_to_first_byte) {
+      size += offset - current_read.current_offset;
+      offset = current_read.current_offset;
+    }
+  }
+  if (offset != current_read.current_offset) {
     co_await start_read(offset);
   }
+  auto time = std::chrono::system_clock::now();
   std::string chunk = std::move(std::exchange(current_read.chunk, ""));
   while (static_cast<int64_t>(chunk.size()) < size &&
          *current_read.it != std::end(current_read.generator)) {
@@ -419,6 +435,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
       co_await start_read(offset + chunk.size());
     }
   }
+  context.item->GetAccount()->RegisterDownloadSpeed(
+      std::chrono::system_clock::now() - time, size);
   current_read.current_offset = offset + size;
   if (static_cast<int64_t>(chunk.size()) > size) {
     current_read.chunk =
@@ -426,6 +444,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     chunk.resize(static_cast<size_t>(size));
   }
   co_await cache_file->Write(&thread_pool_, offset, chunk);
+  chunk.erase(chunk.begin(),
+              chunk.begin() + static_cast<size_t>(requested_offset - offset));
   co_return std::move(chunk);
 }
 
@@ -627,9 +647,9 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
 }
 
 auto FileSystemContext::GetAccount(std::string_view name) const
-    -> std::shared_ptr<CloudProviderAccount> {
+    -> std::shared_ptr<Account> {
   auto it = std::find_if(accounts_.begin(), accounts_.end(),
-                         [name](auto d) { return d->id == name; });
+                         [name](const auto& d) { return d->id() == name; });
   if (it == accounts_.end()) {
     throw CloudException(CloudException::Type::kNotFound);
   } else {
