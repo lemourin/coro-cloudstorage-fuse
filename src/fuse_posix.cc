@@ -169,7 +169,7 @@ constexpr auto CoroutineT =
 
 ItemId GetItemId(const FileContext& context) {
   return ItemId{.account_type = context.item->provider().type(),
-                .account_id = context.item->GetAccount()->id,
+                .account_id = context.item->GetAccount()->id(),
                 .item_id = FileSystemContext::GetGenericItem(context).id};
 }
 
