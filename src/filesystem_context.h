@@ -16,6 +16,7 @@
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
 #include <coro/http/http_server.h>
+#include <coro/mutex.h>
 #include <coro/promise.h>
 #include <coro/stdx/concepts.h>
 #include <coro/task.h>
@@ -162,6 +163,8 @@ class FileSystemContext {
    private:
     std::set<Range> ranges_;
     std::unique_ptr<FILE, FileDeleter> file_;
+    mutable Mutex read_mutex_;
+    mutable Mutex write_mutex_;
   };
 
   struct QueuedRead {
@@ -192,6 +195,7 @@ class FileSystemContext {
     std::string new_name;
     std::optional<SharedPromise<NewFileRead>> new_file_read;
     std::unique_ptr<StopTokenData> stop_token_data;
+    std::unique_ptr<Mutex> mutex;
   };
 
   class CurrentStreamingWrite {
@@ -219,6 +223,7 @@ class FileSystemContext {
     std::unique_ptr<FILE, FileDeleter> buffer_;
     std::vector<Range> ranges_;
     Promise<AbstractCloudProviderT::Item> item_promise_;
+    Mutex write_mutex_;
   };
 
   struct FileContext {

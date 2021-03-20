@@ -589,7 +589,8 @@ auto FileSystemContext::CreateBufferedUpload(const FileContext& parent,
   FileContext result{
       .parent = parent.item,
       .current_write = CurrentWrite{.tmpfile = CreateTmpFile(),
-                                    .new_name = std::string(name)}};
+                                    .new_name = std::string(name),
+                                    .mutex = std::make_unique<Mutex>()}};
   co_return std::move(result);
 }
 
@@ -612,7 +613,8 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
         CurrentWrite{.tmpfile = std::move(file),
                      .new_name = context.item->GetGenericItem().name,
                      .new_file_read = SharedPromise(std::move(read)),
-                     .stop_token_data = std::move(stop_token_data)};
+                     .stop_token_data = std::move(stop_token_data),
+                     .mutex = std::make_unique<Mutex>()};
   }
   if (!context.parent) {
     throw CloudException("no parent");
@@ -624,6 +626,7 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
   if (current_write.new_file_read) {
     co_await current_write.new_file_read->Get(stop_token_or.GetToken());
   }
+  auto lock = co_await UniqueLock::Create(current_write.mutex.get());
   co_await WriteFile(&thread_pool_, current_write.tmpfile.get(), offset, chunk);
 }
 
@@ -645,6 +648,7 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
     co_await current_write.new_file_read->Get(stop_token_or.GetToken());
   }
 
+  auto lock = co_await UniqueLock::Create(current_write.mutex.get());
   auto* file = current_write.tmpfile.get();
   auto file_size = co_await GetFileSize(&thread_pool_, file);
   auto item = co_await context.parent->provider().CreateFile(
@@ -710,6 +714,7 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
       current_offset_ + static_cast<int64_t>(chunk.size()) > size_) {
     throw CloudException("write past declared size");
   }
+  auto lock = co_await UniqueLock::Create(&write_mutex_);
   if (current_offset_ != offset) {
     if (!buffer_) {
       buffer_ = CreateTmpFile();
@@ -788,6 +793,7 @@ FileSystemContext::SparseFile::SparseFile() : file_(CreateTmpFile()) {}
 Task<> FileSystemContext::SparseFile::Write(ThreadPool* thread_pool,
                                             int64_t offset,
                                             std::string_view chunk) {
+  auto lock = co_await UniqueLock::Create(&write_mutex_);
   co_await WriteFile(thread_pool, file_.get(), offset, chunk);
   Range range{.offset = offset, .size = chunk.size()};
   if (ranges_.empty()) {
@@ -827,6 +833,7 @@ Task<std::optional<std::string>> FileSystemContext::SparseFile::Read(
     co_return std::nullopt;
   }
   if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
+    auto lock = co_await UniqueLock::Create(&read_mutex_);
     co_return co_await ReadFile(thread_pool, file_.get(), offset, size);
   } else {
     co_return std::nullopt;
