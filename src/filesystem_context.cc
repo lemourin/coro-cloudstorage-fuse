@@ -404,6 +404,10 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   if (offset > current_read.current_offset) {
     auto time_to_first_byte = context.item->GetAccount()->GetTimeToFirstByte();
     auto download_speed = context.item->GetAccount()->GetDownloadSpeed();
+    if (time_to_first_byte && download_speed) {
+      std::cerr << "TTFB = " << *time_to_first_byte << " DOWNLOAD SPEED "
+                << *download_speed << "\n";
+    }
     if (time_to_first_byte && download_speed &&
         (offset - current_read.current_offset) / *download_speed <=
             *time_to_first_byte) {
