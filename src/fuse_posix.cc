@@ -826,6 +826,9 @@ int Run(int argc, char** argv) {
                               &cb_data));
       CheckEvent(event_add(&cb_data.signal_event[i], nullptr));
     }
+    if (fuse_daemonize(options.foreground) != 0) {
+      throw std::runtime_error("fuse_daemonize failed");
+    }
     if (event_base_dispatch(event_base.get()) != 1) {
       throw std::runtime_error("event_base_dispatch failed");
     }
