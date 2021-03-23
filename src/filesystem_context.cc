@@ -793,7 +793,7 @@ FileSystemContext::SparseFile::SparseFile() : file_(CreateTmpFile()) {}
 Task<> FileSystemContext::SparseFile::Write(ThreadPool* thread_pool,
                                             int64_t offset,
                                             std::string_view chunk) {
-  auto lock = co_await UniqueLock::Create(&write_mutex_);
+  auto lock = co_await UniqueLock::Create(&mutex_);
   co_await WriteFile(thread_pool, file_.get(), offset, chunk);
   Range range{.offset = offset, .size = chunk.size()};
   if (ranges_.empty()) {
@@ -833,7 +833,7 @@ Task<std::optional<std::string>> FileSystemContext::SparseFile::Read(
     co_return std::nullopt;
   }
   if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
-    auto lock = co_await UniqueLock::Create(&read_mutex_);
+    auto lock = co_await UniqueLock::Create(&mutex_);
     co_return co_await ReadFile(thread_pool, file_.get(), offset, size);
   } else {
     co_return std::nullopt;

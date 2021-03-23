@@ -163,8 +163,7 @@ class FileSystemContext {
    private:
     std::set<Range> ranges_;
     std::unique_ptr<FILE, FileDeleter> file_;
-    mutable Mutex read_mutex_;
-    mutable Mutex write_mutex_;
+    mutable Mutex mutex_;
   };
 
   struct QueuedRead {
