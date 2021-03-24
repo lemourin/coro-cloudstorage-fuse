@@ -338,7 +338,7 @@ class FileSystemContext {
   coro::util::EventLoop event_loop_;
   std::vector<std::shared_ptr<Account>> accounts_;
   bool quit_called_ = false;
-  Http http_;
+  std::optional<Http> http_;
   Config config_;
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
