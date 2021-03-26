@@ -37,6 +37,7 @@ class FileSystemContext {
   using ThreadPool = ::coro::util::ThreadPool;
 
   struct Config {
+    std::optional<std::string> config_path;
     bool buffered_write;
     int cache_size;
   };

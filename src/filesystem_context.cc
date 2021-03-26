@@ -201,7 +201,14 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_server_(std::make_optional<HttpServer>(
           event_base_,
           http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
-          AccountManagerHandlerT(cloud_factory_, AccountListener{this}))),
+          AccountManagerHandlerT(cloud_factory_, AccountListener{this},
+                                 util::AuthTokenManager([&] {
+                                   if (config.config_path) {
+                                     return std::move(*config.config_path);
+                                   } else {
+                                     return util::GetConfigFilePath();
+                                   }
+                                 }())))),
       thread_pool_(event_loop_) {}
 
 FileSystemContext::~FileSystemContext() { Quit(); }
