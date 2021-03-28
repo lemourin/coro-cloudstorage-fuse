@@ -481,7 +481,6 @@ auto FileSystemContext::Rename(const FileContext& context,
   auto stop_token_or = GetToken(context, std::move(stop_token));
   auto item = co_await context.item->provider().RenameItem(
       context.item->item, new_name, stop_token_or.GetToken());
-  http_->InvalidateCache();
   FileContext new_item{.item = Item(context.item->account, std::move(item)),
                        .parent = context.item};
   content_cache_.Invalidate(GetCacheKey(new_item));
@@ -500,7 +499,6 @@ auto FileSystemContext::Move(const FileContext& source,
   auto stop_token_or = GetToken(source, std::move(stop_token));
   auto item = co_await source.item->provider().MoveItem(
       source.item->item, destination.item->item, stop_token_or.GetToken());
-  http_->InvalidateCache();
   FileContext new_item{.item = Item(source.item->account, std::move(item)),
                        .parent = destination.item};
   content_cache_.Invalidate(GetCacheKey(new_item));
@@ -514,7 +512,6 @@ auto FileSystemContext::CreateDirectory(const FileContext& context,
   auto stop_token_or = GetToken(context, std::move(stop_token));
   auto new_directory = co_await context.item->provider().CreateDirectory(
       context.item->item, name, stop_token_or.GetToken());
-  http_->InvalidateCache();
   co_return FileContext{
       .item = Item(context.item->account, std::move(new_directory)),
       .parent = context.item};
@@ -528,7 +525,6 @@ Task<> FileSystemContext::Remove(const FileContext& context,
   }
   co_await context.item->provider().RemoveItem(context.item->item,
                                                stop_token_or.GetToken());
-  http_->InvalidateCache();
   content_cache_.Invalidate(GetCacheKey(context));
 }
 
@@ -583,7 +579,6 @@ auto FileSystemContext::Flush(const FileContext& item,
   }
   auto new_item =
       co_await item.current_streaming_write->Flush(std::move(stop_token));
-  http_->InvalidateCache();
   co_return FileContext{.item = std::move(new_item), .parent = item.parent};
 }
 
@@ -664,7 +659,6 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
       AbstractCloudProviderT::FileContent{.data = ReadFile(&thread_pool_, file),
                                           .size = file_size},
       stop_token_or.GetToken());
-  http_->InvalidateCache();
   FileContext new_item{.item = Item(context.parent->account, std::move(item)),
                        .parent = context.parent};
   content_cache_.Invalidate(GetCacheKey(new_item));
