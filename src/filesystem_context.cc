@@ -200,7 +200,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       cloud_factory_(event_loop_, *http_),
       http_server_(std::make_optional<HttpServer>(
           event_base_,
-          http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
+          http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
           AccountManagerHandlerT(cloud_factory_, AccountListener{this},
                                  util::AuthTokenManager([&] {
                                    if (config.config_path) {
