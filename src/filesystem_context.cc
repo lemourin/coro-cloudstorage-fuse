@@ -20,7 +20,7 @@ using ::coro::util::TypeList;
 template <typename T>
 concept HasUsageData = requires(T v) {
   { v.space_used }
-  ->stdx::convertible_to<int64_t>;
+  ->stdx::convertible_to<std::optional<int64_t>>;
   { v.space_total }
   ->stdx::convertible_to<std::optional<int64_t>>;
 };
@@ -333,7 +333,11 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
   }
   VolumeData total = {.space_used = 0, .space_total = 0};
   for (const auto& data : co_await WhenAll(std::move(tasks))) {
-    total.space_used += data.space_used;
+    if (data.space_used && total.space_used) {
+      *total.space_used += *data.space_used;
+    } else {
+      total.space_used = std::nullopt;
+    }
     if (data.space_total && total.space_total) {
       *total.space_total += *data.space_total;
     } else {

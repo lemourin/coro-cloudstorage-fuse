@@ -198,8 +198,9 @@ class WinFspContext {
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
         auto data = co_await context->GetVolumeData(stdx::stop_token());
-        volume_info->FreeSize =
-            data.space_total ? *data.space_total - data.space_used : UINT64_MAX;
+        volume_info->FreeSize = (data.space_total && data.space_used)
+                                    ? *data.space_total - *data.space_used
+                                    : UINT64_MAX;
         volume_info->TotalSize =
             data.space_total ? *data.space_total : UINT64_MAX;
         wcscpy_s(volume_info->VolumeLabel, L"cloudstorage");

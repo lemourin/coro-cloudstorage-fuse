@@ -685,7 +685,7 @@ Task<> StatFs(fuse_req_t req, fuse_ino_t ino) {
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   auto volume_data =
       co_await context->context.GetVolumeData(stop_source.get_token());
-  if (!volume_data.space_total) {
+  if (!volume_data.space_total || !volume_data.space_used) {
     fuse_reply_err(req, EIO);
     co_return;
   }
@@ -693,9 +693,9 @@ Task<> StatFs(fuse_req_t req, fuse_ino_t ino) {
     .f_bsize = 1, .f_frsize = 1,
     .f_blocks = static_cast<fsblkcnt_t>(*volume_data.space_total),
     .f_bfree = static_cast<fsblkcnt_t>(*volume_data.space_total -
-                                       volume_data.space_used),
+                                       *volume_data.space_used),
     .f_bavail = static_cast<fsblkcnt_t>(*volume_data.space_total -
-                                        volume_data.space_used),
+                                        *volume_data.space_used),
     .f_files = std::numeric_limits<fsblkcnt_t>::max(),
     .f_ffree = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,
     .f_favail = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode,

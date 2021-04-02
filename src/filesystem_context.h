@@ -11,6 +11,7 @@
 #include <coro/cloudstorage/providers/mega.h>
 #include <coro/cloudstorage/providers/one_drive.h>
 #include <coro/cloudstorage/providers/pcloud.h>
+#include <coro/cloudstorage/providers/webdav.h>
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/http/cache_http.h>
@@ -44,8 +45,9 @@ class FileSystemContext {
 
   struct AccountListener;
 
-  using CloudProviders = coro::util::TypeList<GoogleDrive, Mega, OneDrive,
-                                              Dropbox, Box, YandexDisk, PCloud>;
+  using CloudProviders =
+      coro::util::TypeList<GoogleDrive, Mega, OneDrive, Dropbox, Box,
+                           YandexDisk, PCloud, WebDAV>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactory<EventLoop, Http>,
@@ -60,7 +62,7 @@ class FileSystemContext {
   };
 
   struct VolumeData {
-    int64_t space_used;
+    std::optional<int64_t> space_used;
     std::optional<int64_t> space_total;
   };
 
@@ -87,7 +89,7 @@ class FileSystemContext {
     }
 
     std::optional<int64_t> GetDownloadSpeed() const {
-      if (download_size_ == 0) {
+      if (download_speed_sum_ / std::chrono::milliseconds(1) == 0) {
         return std::nullopt;
       }
       return download_size_ /
