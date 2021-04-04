@@ -9,7 +9,7 @@
   <Identity
     Name="57864PaweWegner.CloudStorageFUSE"
     Publisher="CN=45E1A990-1A96-4132-833F-79DEA509C305"
-    Version="1.0.17.0" />
+    Version="1.0.18.0" />
 
   <Properties>
     <DisplayName>Cloud Storage FUSE</DisplayName>
