@@ -1,7 +1,11 @@
+#include <coro/util/raii_utils.h>
+
 #include <csignal>
 #include <future>
 #include <iostream>
 #include <sstream>
+
+using ::coro::util::AtScopeExit;
 
 template <auto FreeFunc>
 struct Deleter {
@@ -16,19 +20,6 @@ struct Deleter {
 template <auto FreeFunc, typename T>
 auto Create(T* d) {
   return std::unique_ptr<T, Deleter<FreeFunc>>(d);
-}
-
-template <typename F>
-auto AtScopeExit(F func) {
-  struct Guard {
-    explicit Guard(F func) : func(std::move(func)) {}
-    ~Guard() { func(); }
-    Guard(const Guard&) = delete;
-    Guard(Guard&&) = delete;
-
-    F func;
-  };
-  return Guard(std::move(func));
 }
 
 #ifdef WIN32
@@ -175,6 +166,18 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
     auto service_thread =
         std::async(std::launch::async, FspServiceLoop, service.get());
     Check(window_data.initialized.get_future().get(), "SvcStart");
+
+    NETRESOURCE netresource = {
+        .dwType = RESOURCETYPE_DISK,
+        .lpLocalName = const_cast<char*>("W:"),
+        .lpRemoteName = const_cast<char*>("http://localhost:12345")};
+    Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/"",
+                             /*lpUserName=*/nullptr, /*dwFlags=*/0),
+          "WNetAddConnection3");
+    auto connection_guard = AtScopeExit([&] {
+      Check(WNetCancelConnection2("W:", /*dwFlags=*/0, /*fForce=*/true),
+            "WNetCancelConnection2");
+    });
 
     auto icon = Create<DestroyIcon>(
         LoadIcon(instance, MAKEINTRESOURCE(kIconResourceId)));
