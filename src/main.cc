@@ -101,10 +101,31 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
   return status;
 }
 
+std::string NtStatusToString(NTSTATUS status) {
+  auto ntdll = Create<FreeLibrary>(LoadLibrary("NTDLL.DLL"));
+  if (!ntdll) {
+    throw std::runtime_error("LoadLibrary error");
+  }
+  char* message;
+  DWORD result = FormatMessage(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_FROM_HMODULE,
+      ntdll.get(), status, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      reinterpret_cast<LPTSTR>(&message), 0, nullptr);
+  if (result == 0) {
+    return "";
+  }
+  auto guard = AtScopeExit([&] { LocalFree(message); });
+  return std::string(message, message + result);
+}
+
 void Check(NTSTATUS status, const char* func) {
   if (status != STATUS_SUCCESS) {
     std::stringstream error;
     error << "Fatal error in " << func << " (0x" << std::hex << status << ").";
+    if (auto status_string = NtStatusToString(status); !status_string.empty()) {
+      error << "\n" << status_string;
+    }
     MessageBox(nullptr, error.str().c_str(), nullptr, MB_OK | MB_ICONERROR);
     throw std::runtime_error(func);
   }

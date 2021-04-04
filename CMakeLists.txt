@@ -32,7 +32,7 @@ if(WIN32)
     find_library(winfsp_LIBRARY NAMES winfsp-${ARCH} PATHS $ENV{PROGRAMFILES\(x86\)}/WinFsp/lib REQUIRED)
     find_path(winfsp_INCLUDE winfsp/winfsp.h PATHS PATHS $ENV{PROGRAMFILES\(x86\)}/WinFsp/inc REQUIRED)
 
-    target_link_libraries(coro-cloudstorage-fuse PRIVATE ${winfsp_LIBRARY} Mpr)
+    target_link_libraries(coro-cloudstorage-fuse PRIVATE ${winfsp_LIBRARY} mpr ntdll)
     target_include_directories(coro-cloudstorage-fuse PRIVATE ${winfsp_INCLUDE})
 
     set_target_properties(coro-cloudstorage-fuse PROPERTIES LINK_FLAGS "/DELAYLOAD:winfsp-${ARCH}.dll delayimp.lib" )
