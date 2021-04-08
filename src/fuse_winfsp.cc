@@ -372,10 +372,14 @@ class WinFspContext {
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         } else {
-          *file_info =
-              FSP_FSCTL_FILE_INFO{.FileAttributes = FILE_ATTRIBUTE_NORMAL};
+          auto new_item = co_await context->Create(
+              std::move(parent), file_name, /*size=*/0, stdx::stop_token());
+          new_item =
+              co_await context->Flush(std::move(new_item), stdx::stop_token());
+          ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
           std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.path = ToUnixPath(filename), .size = 0});
+              new FuseFileContext{.context = std::move(new_item),
+                                  .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         }
@@ -488,15 +492,29 @@ class WinFspContext {
               parent, file_name, file->size, stdx::stop_token());
         }
 
-        auto size = file->size.value();
+        if (!file->size) {
+          file->size = FileSystemContext::GetGenericItem(file->context).size;
+        }
+
+        if (write_to_end_of_file) {
+          offset = file->size.value();
+        }
+
         if (constrained_io) {
-          if (offset >= size) {
+          if (offset >= file->size.value()) {
             response.IoStatus.Status = STATUS_SUCCESS;
             FspFileSystemSendResponse(fs, &response);
             co_return;
           }
-          length = std::min<ULONG>(length, static_cast<ULONG>(size - offset));
+          length = std::min<ULONG>(
+              length, static_cast<ULONG>(file->size.value() - offset));
+        } else {
+          if (!file->size || offset + length > *file->size) {
+            file->size = offset + length;
+          }
         }
+
+        auto size = file->size.value();
 
         co_await context->Write(
             file->context,
@@ -525,11 +543,7 @@ class WinFspContext {
 
   static NTSTATUS Flush(FSP_FILE_SYSTEM* fs, PVOID file_context,
                         FSP_FSCTL_FILE_INFO* info) {
-    auto file = static_cast<FuseFileContext*>(file_context);
-    auto item = FileSystemContext::GetGenericItem(file->context);
-    item.size = file->size.value_or(item.size.value_or(0));
-    ToFileInfo(item, info);
-    return STATUS_SUCCESS;
+    return GetFileInfo(fs, file_context, info);
   }
 
   static NTSTATUS GetFileInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
@@ -558,8 +572,9 @@ class WinFspContext {
           co_return STATUS_INVALID_DEVICE_REQUEST;
         }
       });
+      return;
     }
-    if (file->context.current_write || file->context.current_streaming_write) {
+    if (flags & FspCleanupSetLastWriteTime) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
           if (!file->context.current_write &&
