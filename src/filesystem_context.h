@@ -15,6 +15,7 @@
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/cloudstorage/util/auth_data.h>
+#include <coro/cloudstorage/util/thumbnail_generator.h>
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
 #include <coro/http/http_server.h>
@@ -391,8 +392,9 @@ class FileSystemContext {
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
   CloudFactoryT cloud_factory_;
-  std::optional<HttpServer> http_server_;
+  util::ThumbnailGenerator thumbnail_generator_;
   mutable ThreadPool thread_pool_;
+  std::optional<HttpServer> http_server_;
 };
 
 }  // namespace coro::cloudstorage
