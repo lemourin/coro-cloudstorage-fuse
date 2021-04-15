@@ -391,9 +391,9 @@ class FileSystemContext {
   Config config_;
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
-  CloudFactoryT cloud_factory_;
-  util::ThumbnailGenerator thumbnail_generator_;
   mutable ThreadPool thread_pool_;
+  util::ThumbnailGenerator thumbnail_generator_;
+  CloudFactoryT cloud_factory_;
   std::optional<HttpServer> http_server_;
 };
 

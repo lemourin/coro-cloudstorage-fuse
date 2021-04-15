@@ -197,9 +197,9 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_(http::CurlHttp(event_base)),
       config_(config),
       content_cache_(config_.cache_size, SparseFileFactory{}),
-      cloud_factory_(event_loop_, *http_),
       thread_pool_(event_loop_),
       thumbnail_generator_(&thread_pool_, &event_loop_),
+      cloud_factory_(event_loop_, *http_, thumbnail_generator_),
       http_server_(std::make_optional<HttpServer>(
           event_base_,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
