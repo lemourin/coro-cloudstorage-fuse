@@ -15,6 +15,7 @@
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/cloudstorage/util/auth_data.h>
+#include <coro/cloudstorage/util/muxer.h>
 #include <coro/cloudstorage/util/thumbnail_generator.h>
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
@@ -393,6 +394,7 @@ class FileSystemContext {
       content_cache_;
   mutable ThreadPool thread_pool_;
   util::ThumbnailGenerator thumbnail_generator_;
+  util::Muxer muxer_;
   CloudFactoryT cloud_factory_;
   std::optional<HttpServer> http_server_;
 };
