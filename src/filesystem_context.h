@@ -15,6 +15,7 @@
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/cloudstorage/util/auth_data.h>
+#include <coro/cloudstorage/util/file_utils.h>
 #include <coro/cloudstorage/util/muxer.h>
 #include <coro/cloudstorage/util/thumbnail_generator.h>
 #include <coro/http/cache_http.h>
@@ -177,14 +178,6 @@ class FileSystemContext {
     AbstractCloudProviderT::Item item;
   };
 
-  struct FileDeleter {
-    void operator()(std::FILE* file) const {
-      if (file) {
-        fclose(file);
-      }
-    }
-  };
-
   struct StopTokenData {
     stdx::stop_source stop_source;
     ::coro::util::StopTokenOr stop_token_or;
@@ -212,7 +205,7 @@ class FileSystemContext {
 
    private:
     std::set<Range> ranges_;
-    std::unique_ptr<FILE, FileDeleter> file_;
+    std::unique_ptr<FILE, util::FileDeleter> file_;
     mutable Mutex mutex_;
   };
 
@@ -240,7 +233,7 @@ class FileSystemContext {
   };
 
   struct CurrentWrite {
-    std::unique_ptr<std::FILE, FileDeleter> tmpfile;
+    std::unique_ptr<std::FILE, util::FileDeleter> tmpfile;
     std::string new_name;
     std::optional<SharedPromise<NewFileRead>> new_file_read;
     std::unique_ptr<StopTokenData> stop_token_data;
@@ -269,7 +262,7 @@ class FileSystemContext {
     Promise<std::string> current_chunk_;
     Promise<void> done_;
     int64_t current_offset_ = 0;
-    std::unique_ptr<FILE, FileDeleter> buffer_;
+    std::unique_ptr<FILE, util::FileDeleter> buffer_;
     std::vector<Range> ranges_;
     Promise<AbstractCloudProviderT::Item> item_promise_;
     Mutex write_mutex_;

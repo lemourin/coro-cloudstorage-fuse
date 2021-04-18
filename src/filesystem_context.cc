@@ -2,6 +2,7 @@
 
 #include <coro/cloudstorage/abstract_cloud_provider.h>
 #include <coro/cloudstorage/cloud_exception.h>
+#include <coro/cloudstorage/util/string_utils.h>
 #include <coro/util/stop_token_or.h>
 #include <coro/when_all.h>
 
@@ -12,6 +13,11 @@ namespace coro::cloudstorage {
 
 namespace {
 
+using ::coro::cloudstorage::util::CreateTmpFile;
+using ::coro::cloudstorage::util::GetFileSize;
+using ::coro::cloudstorage::util::ReadFile;
+using ::coro::cloudstorage::util::SplitString;
+using ::coro::cloudstorage::util::WriteFile;
 using ::coro::util::AtScopeExit;
 using ::coro::util::StopTokenOr;
 using ::coro::util::ThreadPool;
@@ -19,47 +25,9 @@ using ::coro::util::TypeList;
 
 template <typename T>
 concept HasUsageData = requires(T v) {
-  { v.space_used }
-  ->stdx::convertible_to<std::optional<int64_t>>;
-  { v.space_total }
-  ->stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_used } -> stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_total } -> stdx::convertible_to<std::optional<int64_t>>;
 };
-
-template <typename T, typename C>
-std::vector<T> SplitString(const T& string, C delim) {
-  std::vector<T> result;
-  T current;
-  for (auto c : string) {
-    if (c == delim) {
-      if (!current.empty()) {
-        result.emplace_back(std::move(current));
-      }
-      current.clear();
-    } else {
-      current += c;
-    }
-  }
-  if (!current.empty()) {
-    result.emplace_back(std::move(current));
-  }
-  return result;
-}
-
-int64_t Ftell(std::FILE* file) {
-#ifdef WIN32
-  return _ftelli64(file);
-#else
-  return ftello(file);
-#endif
-}
-
-int Fseek(std::FILE* file, int64_t offset, int origin) {
-#ifdef WIN32
-  return _fseeki64(file, offset, origin);
-#else
-  return fseeko(file, offset, origin);
-#endif
-}
 
 StopTokenOr GetToken(const FileSystemContext::FileContext& context,
                      stdx::stop_token stop_token) {
@@ -67,72 +35,6 @@ StopTokenOr GetToken(const FileSystemContext::FileContext& context,
     throw std::invalid_argument("item not associated with any account");
   }
   return StopTokenOr(std::move(stop_token), context.item->stop_token());
-}
-
-auto CreateTmpFile() {
-  return std::unique_ptr<std::FILE, FileSystemContext::FileDeleter>([] {
-#ifdef _MSC_VER
-    std::FILE* file;
-    if (tmpfile_s(&file) != 0) {
-      throw std::runtime_error("couldn't create tmpfile");
-    }
-    return file;
-#else
-    return std::tmpfile();
-#endif
-  }());
-}
-
-Task<int64_t> GetFileSize(ThreadPool* thread_pool, std::FILE* file) {
-  return thread_pool->Invoke([=] {
-    if (Fseek(file, 0, SEEK_END) != 0) {
-      throw std::runtime_error("fseek failed");
-    }
-    return Ftell(file);
-  });
-}
-
-Generator<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file) {
-  const int kBufferSize = 4096;
-  char buffer[kBufferSize];
-  if (co_await thread_pool->Invoke(Fseek, file, 0, SEEK_SET) != 0) {
-    throw std::runtime_error("fseek failed");
-  }
-  while (feof(file) == 0) {
-    size_t size =
-        co_await thread_pool->Invoke(fread, &buffer, 1, kBufferSize, file);
-    if (ferror(file) != 0) {
-      throw std::runtime_error("read error");
-    }
-    co_yield std::string(buffer, size);
-  }
-}
-
-Task<std::string> ReadFile(ThreadPool* thread_pool, std::FILE* file,
-                           int64_t offset, size_t size) {
-  return thread_pool->Invoke([=] {
-    if (Fseek(file, offset, SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed " + std::to_string(offset));
-    }
-    std::string buffer(size, 0);
-    if (fread(buffer.data(), 1, size, file) != size) {
-      throw std::runtime_error("fread failed");
-    }
-    return buffer;
-  });
-}
-
-Task<> WriteFile(ThreadPool* thread_pool, std::FILE* file, int64_t offset,
-                 std::string_view data) {
-  return thread_pool->Invoke([=] {
-    if (Fseek(file, offset, SEEK_SET) != 0) {
-      throw std::runtime_error("fseek failed " + std::to_string(offset) + " " +
-                               std::to_string(errno));
-    }
-    if (fwrite(data.data(), 1, data.size(), file) != data.size()) {
-      throw std::runtime_error("fwrite failed");
-    }
-  });
 }
 
 FileSystemContext::Range Add(const FileSystemContext::Range& r1,
