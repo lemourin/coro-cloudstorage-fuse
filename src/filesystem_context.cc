@@ -25,8 +25,10 @@ using ::coro::util::TypeList;
 
 template <typename T>
 concept HasUsageData = requires(T v) {
-  { v.space_used } -> stdx::convertible_to<std::optional<int64_t>>;
-  { v.space_total } -> stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_used }
+  ->stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_total }
+  ->stdx::convertible_to<std::optional<int64_t>>;
 };
 
 StopTokenOr GetToken(const FileSystemContext::FileContext& context,
