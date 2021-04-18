@@ -81,9 +81,10 @@ struct AuthData {
 class FileSystemContext {
  public:
   using Http = http::CacheHttp<http::CurlHttp>;
-  using EventLoop = ::coro::util::EventLoop;
-  using ThreadPool = ::coro::util::ThreadPool;
-  using CloudFactoryT = CloudFactory<EventLoop, Http, internal::AuthData>;
+  using EventLoop = coro::util::EventLoop;
+  using ThreadPool = coro::util::ThreadPool;
+  using CloudFactoryT = CloudFactory<EventLoop, Http, util::ThumbnailGenerator,
+                                     util::Muxer, internal::AuthData>;
 
   struct Config {
     std::optional<std::string> config_path;
