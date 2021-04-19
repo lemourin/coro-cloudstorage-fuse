@@ -83,7 +83,8 @@ class FileSystemContext {
   using Http = http::CacheHttp<http::CurlHttp>;
   using EventLoop = coro::util::EventLoop;
   using ThreadPool = coro::util::ThreadPool;
-  using CloudFactoryT = CloudFactory<EventLoop, Http, util::ThumbnailGenerator,
+  using ThumbnailGenerator = util::ThumbnailGenerator;
+  using CloudFactoryT = CloudFactory<EventLoop, Http, ThumbnailGenerator,
                                      util::Muxer, internal::AuthData>;
 
   struct Config {
@@ -100,7 +101,7 @@ class FileSystemContext {
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactoryT,
-                                  AccountListener>;
+                                  ThumbnailGenerator, AccountListener>;
   using CloudProviderAccount = AccountManagerHandlerT::CloudProviderAccount;
   using HttpServer = http::HttpServer<AccountManagerHandlerT>;
 
@@ -127,7 +128,7 @@ class FileSystemContext {
     CloudProviderAccount* account() const { return account_; }
     auto& stop_source() const { return account()->stop_source; }
     auto& provider() const { return account()->provider; }
-    auto& id() const { return account()->id; }
+    auto id() const { return account()->GetId(); }
 
     std::optional<int64_t> GetTimeToFirstByte() const {
       if (time_to_first_byte_sample_cnt_ == 0) {
@@ -387,7 +388,7 @@ class FileSystemContext {
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
   mutable ThreadPool thread_pool_;
-  util::ThumbnailGenerator thumbnail_generator_;
+  ThumbnailGenerator thumbnail_generator_;
   util::Muxer muxer_;
   CloudFactoryT cloud_factory_;
   std::optional<HttpServer> http_server_;

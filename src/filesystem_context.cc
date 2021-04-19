@@ -25,10 +25,8 @@ using ::coro::util::TypeList;
 
 template <typename T>
 concept HasUsageData = requires(T v) {
-  { v.space_used }
-  ->stdx::convertible_to<std::optional<int64_t>>;
-  { v.space_total }
-  ->stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_used } -> stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_total } -> stdx::convertible_to<std::optional<int64_t>>;
 };
 
 StopTokenOr GetToken(const FileSystemContext::FileContext& context,
@@ -85,14 +83,14 @@ auto FileSystemContext::Item::GetAccount() const -> std::shared_ptr<Account> {
 
 void FileSystemContext::AccountListener::OnCreate(CloudProviderAccount* d) {
   context->accounts_.emplace_back(std::make_shared<Account>(d));
-  std::cerr << "CREATED " << d->id << "\n";
+  std::cerr << "CREATED " << d->GetId() << "\n";
 }
 
 void FileSystemContext::AccountListener::OnDestroy(CloudProviderAccount* d) {
   context->accounts_.erase(std::find_if(
       context->accounts_.begin(), context->accounts_.end(),
       [d](const auto& account) { return account->account() == d; }));
-  std::cerr << "REMOVED " << d->id << "\n";
+  std::cerr << "REMOVED " << d->GetId() << "\n";
 }
 
 FileSystemContext::FileSystemContext(event_base* event_base, Config config)
