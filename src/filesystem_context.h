@@ -293,6 +293,10 @@ class FileSystemContext {
   FileSystemContext& operator=(const FileSystemContext&) = delete;
   FileSystemContext& operator=(FileSystemContext&&) = delete;
 
+  auto Wait(int ms, stdx::stop_token stop_token) {
+    return event_loop_.Wait(ms, std::move(stop_token));
+  }
+
   template <typename F>
   auto RunOnEventLoop(F func) {
     return event_loop_.RunOnEventLoop(std::move(func));

@@ -25,8 +25,10 @@ using ::coro::util::TypeList;
 
 template <typename T>
 concept HasUsageData = requires(T v) {
-  { v.space_used } -> stdx::convertible_to<std::optional<int64_t>>;
-  { v.space_total } -> stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_used }
+  ->stdx::convertible_to<std::optional<int64_t>>;
+  { v.space_total }
+  ->stdx::convertible_to<std::optional<int64_t>>;
 };
 
 StopTokenOr GetToken(const FileSystemContext::FileContext& context,
@@ -220,8 +222,7 @@ auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
   auto get_volume_data =
       [stop_token](const auto& account) mutable -> Task<VolumeData> {
     auto get_volume_data = [&](auto& provider) -> Task<VolumeData> {
-      StopTokenOr stop_token_or(account->stop_source().get_token(),
-                                std::move(stop_token));
+      StopTokenOr stop_token_or(account->stop_source().get_token(), stop_token);
       auto data = co_await provider.GetGeneralData(stop_token_or.GetToken());
       if constexpr (HasUsageData<decltype(data)>) {
         co_return VolumeData{.space_used = data.space_used,
