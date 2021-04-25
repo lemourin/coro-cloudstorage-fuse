@@ -31,12 +31,61 @@ concept HasUsageData = requires(T v) {
   ->stdx::convertible_to<std::optional<int64_t>>;
 };
 
-StopTokenOr GetToken(const FileSystemContext::FileContext& context,
-                     stdx::stop_token stop_token) {
+class TimingOutStopToken {
+ public:
+  TimingOutStopToken(const FileSystemContext::EventLoop& event_loop,
+                     std::string action, int timeout_ms) {
+    coro::Invoke([this, event_loop = &event_loop, action = std::move(action),
+                  timeout_ms,
+                  stop_token = stop_source_.get_token()]() -> Task<> {
+      co_await event_loop->Wait(timeout_ms / 4, stop_token);
+      if (!stop_token.stop_requested()) {
+        std::cerr << action << " TIMING OUT\n";
+      } else {
+        co_return;
+      }
+      co_await event_loop->Wait(timeout_ms * 3 / 4, stop_token);
+      if (!stop_token.stop_requested()) {
+        std::cerr << action << " TIMED OUT\n";
+        stop_source_.request_stop();
+      }
+    });
+  }
+
+  ~TimingOutStopToken() { stop_source_.request_stop(); }
+
+  stdx::stop_token GetToken() const { return stop_source_.get_token(); }
+
+ private:
+  stdx::stop_source stop_source_;
+};
+
+class ContextStopToken {
+ public:
+  ContextStopToken(const FileSystemContext::EventLoop& event_loop,
+                   std::string action, int timeout_ms,
+                   stdx::stop_token account_token, stdx::stop_token query_token)
+      : fst_(std::move(account_token), std::move(query_token)),
+        timing_out_stop_token_(event_loop, std::move(action), timeout_ms),
+        nd_(fst_.GetToken(), timing_out_stop_token_.GetToken()) {}
+
+  stdx::stop_token GetToken() const { return nd_.GetToken(); }
+
+ private:
+  StopTokenOr fst_;
+  TimingOutStopToken timing_out_stop_token_;
+  StopTokenOr nd_;
+};
+
+ContextStopToken GetToken(const FileSystemContext::EventLoop& event_loop,
+                          std::string action, int timeout_ms,
+                          const FileSystemContext::FileContext& context,
+                          stdx::stop_token stop_token) {
   if (!context.item) {
     throw std::invalid_argument("item not associated with any account");
   }
-  return StopTokenOr(std::move(stop_token), context.item->stop_token());
+  return ContextStopToken(event_loop, std::move(action), timeout_ms,
+                          std::move(stop_token), context.item->stop_token());
 }
 
 FileSystemContext::Range Add(const FileSystemContext::Range& r1,
@@ -157,17 +206,19 @@ auto FileSystemContext::GetFileContext(std::string path,
   for (size_t i = 1; i < components.size(); i++) {
     provider_path += "/" + components[i];
   }
-  StopTokenOr stop_token_or(account->stop_source().get_token(),
-                            std::move(stop_token));
+  ContextStopToken context_stop_token(
+      event_loop_, "GetFileContext", config_.timeout_ms,
+      account->stop_source().get_token(), std::move(stop_token));
   auto get_item_by_path = [&](auto& d) -> Task<FileContext> {
     auto it = provider_path.find_last_of('/', provider_path.length() - 2);
-    auto item = Item(account, co_await d.GetItemByPath(
-                                  provider_path, stop_token_or.GetToken()));
+    auto item = Item(
+        account,
+        co_await d.GetItemByPath(provider_path, context_stop_token.GetToken()));
     std::optional<Item> parent;
     if (it != std::string::npos) {
-      parent =
-          Item(account, co_await d.GetItemByPath(provider_path.substr(0, it),
-                                                 stop_token_or.GetToken()));
+      parent = Item(account,
+                    co_await d.GetItemByPath(provider_path.substr(0, it),
+                                             context_stop_token.GetToken()));
     }
     co_return FileContext{.item = std::move(item), .parent = std::move(parent)};
   };
@@ -194,9 +245,11 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
     std::vector<FileContext> result;
     for (const auto& account : accounts_) {
       auto get_root = [&](auto& provider) -> Task<FileContext> {
-        StopTokenOr stop_token_or(stop_token,
-                                  account->stop_source().get_token());
-        auto directory = co_await provider.GetRoot(stop_token_or.GetToken());
+        ContextStopToken context_stop_token(event_loop_, "GetRoot",
+                                            config_.timeout_ms, stop_token,
+                                            account->stop_source().get_token());
+        auto directory =
+            co_await provider.GetRoot(context_stop_token.GetToken());
         directory.name = account->id();
         co_return FileContext{.item = Item(account, std::move(directory))};
       };
@@ -205,9 +258,11 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
     }
     co_return PageData{.items = std::move(result)};
   }
-  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto context_stop_token =
+      GetToken(event_loop_, "ReadDirectoryPage", config_.timeout_ms, context,
+               std::move(stop_token));
   auto page_data = co_await context.item->provider().ListDirectoryPage(
-      context.item->item, std::move(page_token), stop_token_or.GetToken());
+      context.item->item, std::move(page_token), context_stop_token.GetToken());
   PageData result = {.next_page_token = std::move(page_data.next_page_token)};
   for (auto& item : page_data.items) {
     result.items.emplace_back(
@@ -219,11 +274,13 @@ auto FileSystemContext::ReadDirectoryPage(const FileContext& context,
 
 auto FileSystemContext::GetVolumeData(stdx::stop_token stop_token) const
     -> Task<VolumeData> {
-  auto get_volume_data =
-      [stop_token](const auto& account) mutable -> Task<VolumeData> {
+  auto get_volume_data = [&](const auto& account) mutable -> Task<VolumeData> {
     auto get_volume_data = [&](auto& provider) -> Task<VolumeData> {
-      StopTokenOr stop_token_or(account->stop_source().get_token(), stop_token);
-      auto data = co_await provider.GetGeneralData(stop_token_or.GetToken());
+      ContextStopToken context_stop_token(
+          event_loop_, "GetVolumeData", config_.timeout_ms,
+          account->stop_source().get_token(), stop_token);
+      auto data =
+          co_await provider.GetGeneralData(context_stop_token.GetToken());
       if constexpr (HasUsageData<decltype(data)>) {
         co_return VolumeData{.space_used = data.space_used,
                              .space_total = data.space_total};
@@ -259,7 +316,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   if (!context.item) {
     throw CloudException("not a file");
   }
-  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto context_stop_token = GetToken(event_loop_, "Read", config_.timeout_ms,
+                                     context, std::move(stop_token));
   auto generic_item = GetGenericItem(context);
   if (!generic_item.size) {
     throw CloudException("size unknown");
@@ -274,7 +332,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   size = std::min<int64_t>(size, *generic_item.size - offset);
 
   auto cache_file = co_await content_cache_.Get(GetCacheKey(context),
-                                                stop_token_or.GetToken());
+                                                context_stop_token.GetToken());
   if (!context.current_read) {
     context.current_read = CurrentRead{.current_offset = INT64_MAX};
   }
@@ -290,7 +348,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
       current_read.reads.erase(std::find(current_read.reads.begin(),
                                          current_read.reads.end(), &read));
     });
-    co_await InterruptibleAwait(read.semaphore, stop_token_or.GetToken());
+    co_await InterruptibleAwait(read.semaphore, context_stop_token.GetToken());
   }
   current_read.pending = true;
   auto guard = AtScopeExit([&] {
@@ -312,7 +370,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
         current_read.stop_token_data->stop_token_or.GetToken());
     auto time = std::chrono::system_clock::now();
     current_read.it = co_await InterruptibleAwait(
-        current_read.generator.begin(), stop_token_or.GetToken());
+        current_read.generator.begin(), context_stop_token.GetToken());
     context.item->GetAccount()->RegisterTimeToFirstByte(
         std::chrono::system_clock::now() - time);
     current_read.current_offset = offset;
@@ -358,7 +416,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     std::optional<std::exception_ptr> exception;
     try {
       auto task = ++*current_read.it;
-      co_await InterruptibleAwait(std::move(task), stop_token_or.GetToken());
+      co_await InterruptibleAwait(std::move(task),
+                                  context_stop_token.GetToken());
     } catch (const InterruptedException&) {
       throw;
     } catch (...) {
@@ -388,9 +447,10 @@ auto FileSystemContext::Rename(const FileContext& context,
     throw CloudException("cannot rename root");
   }
 
-  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto context_stop_token = GetToken(event_loop_, "Rename", config_.timeout_ms,
+                                     context, std::move(stop_token));
   auto item = co_await context.item->provider().RenameItem(
-      context.item->item, new_name, stop_token_or.GetToken());
+      context.item->item, new_name, context_stop_token.GetToken());
   FileContext new_item{.item = Item(context.item->account, std::move(item)),
                        .parent = context.item};
   content_cache_.Invalidate(GetCacheKey(new_item));
@@ -406,9 +466,10 @@ auto FileSystemContext::Move(const FileContext& source,
   if (source.item->account.lock() != destination.item->account.lock()) {
     throw CloudException("cannot move between different accounts");
   }
-  auto stop_token_or = GetToken(source, std::move(stop_token));
+  auto context_stop_token = GetToken(event_loop_, "Move", config_.timeout_ms,
+                                     source, std::move(stop_token));
   auto item = co_await source.item->provider().MoveItem(
-      source.item->item, destination.item->item, stop_token_or.GetToken());
+      source.item->item, destination.item->item, context_stop_token.GetToken());
   FileContext new_item{.item = Item(source.item->account, std::move(item)),
                        .parent = destination.item};
   content_cache_.Invalidate(GetCacheKey(new_item));
@@ -419,9 +480,11 @@ auto FileSystemContext::CreateDirectory(const FileContext& context,
                                         std::string_view name,
                                         stdx::stop_token stop_token)
     -> Task<FileContext> {
-  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto context_stop_token =
+      GetToken(event_loop_, "CreateDirectory", config_.timeout_ms, context,
+               std::move(stop_token));
   auto new_directory = co_await context.item->provider().CreateDirectory(
-      context.item->item, name, stop_token_or.GetToken());
+      context.item->item, name, context_stop_token.GetToken());
   co_return FileContext{
       .item = Item(context.item->account, std::move(new_directory)),
       .parent = context.item};
@@ -429,12 +492,13 @@ auto FileSystemContext::CreateDirectory(const FileContext& context,
 
 Task<> FileSystemContext::Remove(const FileContext& context,
                                  stdx::stop_token stop_token) {
-  auto stop_token_or = GetToken(context, std::move(stop_token));
+  auto context_stop_token = GetToken(event_loop_, "Remove", config_.timeout_ms,
+                                     context, std::move(stop_token));
   if (!context.item) {
     throw CloudException("cannot remove root");
   }
   co_await context.item->provider().RemoveItem(context.item->item,
-                                               stop_token_or.GetToken());
+                                               context_stop_token.GetToken());
   content_cache_.Invalidate(GetCacheKey(context));
 }
 
@@ -533,11 +597,12 @@ Task<> FileSystemContext::WriteToBufferedUpload(const FileContext& context,
     throw CloudException("no parent");
   }
 
-  StopTokenOr stop_token_or(std::move(stop_token),
-                            context.parent->stop_token());
+  ContextStopToken context_stop_token(event_loop_, "WriteToBufferedUpload",
+                                      config_.timeout_ms, std::move(stop_token),
+                                      context.parent->stop_token());
   const auto& current_write = *context.current_write;
   if (current_write.new_file_read) {
-    co_await current_write.new_file_read->Get(stop_token_or.GetToken());
+    co_await current_write.new_file_read->Get(context_stop_token.GetToken());
   }
   auto lock = co_await UniqueLock::Create(current_write.mutex.get());
   co_await WriteFile(&thread_pool_, current_write.tmpfile.get(), offset, chunk);

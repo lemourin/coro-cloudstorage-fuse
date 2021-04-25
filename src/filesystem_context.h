@@ -91,6 +91,7 @@ class FileSystemContext {
     std::optional<std::string> config_path;
     bool buffered_write;
     int cache_size;
+    int timeout_ms;
   };
 
   struct AccountListener;
@@ -182,7 +183,7 @@ class FileSystemContext {
 
   struct StopTokenData {
     stdx::stop_source stop_source;
-    ::coro::util::StopTokenOr stop_token_or;
+    coro::util::StopTokenOr stop_token_or;
     StopTokenData(stdx::stop_token root_token)
         : stop_token_or(std::move(root_token), stop_source.get_token()) {}
     ~StopTokenData() { stop_source.request_stop(); }
@@ -285,17 +286,14 @@ class FileSystemContext {
   };
 
   explicit FileSystemContext(event_base*, Config = {.buffered_write = false,
-                                                    .cache_size = 16});
+                                                    .cache_size = 16,
+                                                    .timeout_ms = 10000});
   ~FileSystemContext();
 
   FileSystemContext(const FileSystemContext&) = delete;
   FileSystemContext(FileSystemContext&&) = delete;
   FileSystemContext& operator=(const FileSystemContext&) = delete;
   FileSystemContext& operator=(FileSystemContext&&) = delete;
-
-  auto Wait(int ms, stdx::stop_token stop_token) {
-    return event_loop_.Wait(ms, std::move(stop_token));
-  }
 
   template <typename F>
   auto RunOnEventLoop(F func) {
@@ -341,8 +339,6 @@ class FileSystemContext {
 
   void Quit();
   void Cancel();
-
-  auto Wait(int ms) const { return event_loop_.Wait(ms); }
 
  private:
   Task<FileContext> CreateBufferedUpload(const FileContext& parent,

@@ -15,8 +15,6 @@ namespace coro::cloudstorage::fuse {
 namespace {
 
 const int kAllocationUnit = 1;
-const int kTimeout = 10000;
-const int kWarningTimout = 2000;
 
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
@@ -170,38 +168,14 @@ class WinFspContext {
                                      : 0;
   }
 
-  static void InstallTimeout(FileSystemContext* context,
-                             stdx::stop_source* stop_source,
-                             std::string operation) {
-    coro::Invoke([stop_source, stop_token = stop_source->get_token(), context,
-                  operation = std::move(operation)]() -> Task<> {
-      co_await context->Wait(kWarningTimout, stop_token);
-      if (!stop_token.stop_requested()) {
-        std::cerr << operation << " TIMING OUT\n";
-      } else {
-        co_return;
-      }
-      co_await context->Wait(std::max<int>(kTimeout - kWarningTimout, 0),
-                             stop_token);
-      if (!stop_token.stop_requested()) {
-        std::cerr << operation << " TIMED OUT\n";
-        stop_source->request_stop();
-      }
-    });
-  }
-
   static NTSTATUS Open(FSP_FILE_SYSTEM* fs, PWSTR filename,
                        UINT32 create_options, UINT32 granted_access,
                        PVOID* file_context, FSP_FSCTL_FILE_INFO* file_info) {
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Open");
         FileContext data = co_await context->GetFileContext(
-            ToUnixPath(filename), stop_source.get_token());
+            ToUnixPath(filename), stdx::stop_token());
         ToFileInfo(FileSystemContext::GetGenericItem(data), file_info);
         std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
             .context = std::move(data), .path = ToUnixPath(filename)});
@@ -221,30 +195,24 @@ class WinFspContext {
   static NTSTATUS GetVolumeInfo(FSP_FILE_SYSTEM* fs,
                                 FSP_FSCTL_VOLUME_INFO* volume_info) {
     auto context = reinterpret_cast<FileSystemContext*>(fs->UserContext);
-    volume_info->FreeSize = UINT64_MAX;
-    volume_info->TotalSize = UINT64_MAX;
-    wcscpy_s(volume_info->VolumeLabel, L"cloudstorage");
-    volume_info->VolumeLabelLength =
-        static_cast<UINT16>(wcslen(volume_info->VolumeLabel));
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "GetVolumeInfo");
-        auto data = co_await context->GetVolumeData(stop_source.get_token());
+        auto data = co_await context->GetVolumeData(stdx::stop_token());
         volume_info->FreeSize = (data.space_total && data.space_used)
                                     ? *data.space_total - *data.space_used
                                     : UINT64_MAX;
         volume_info->TotalSize =
             data.space_total ? *data.space_total : UINT64_MAX;
+        wcscpy_s(volume_info->VolumeLabel, L"cloudstorage");
+        volume_info->VolumeLabelLength =
+            static_cast<UINT16>(wcslen(volume_info->VolumeLabel));
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
-        std::cerr << "GetVolumeInfo ERROR " << e.what() << "\n";
-        co_return STATUS_SUCCESS;
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return ToStatus(e);
       } catch (const std::exception& e) {
-        std::cerr << "GetVolumeInfo ERROR " << e.what() << "\n";
-        co_return STATUS_SUCCESS;
+        std::cerr << "ERROR " << e.what() << "\n";
+        co_return STATUS_INVALID_DEVICE_REQUEST;
       }
     });
   }
@@ -283,12 +251,9 @@ class WinFspContext {
         response.IoStatus.Information = 0;
         try {
           {
-            stdx::stop_source stop_source;
-            InstallTimeout(context, &stop_source, "ReadDirectory");
             auto guard = AtScopeExit([&] {
               FspFileSystemReleaseDirectoryBuffer(
                   &file_context->directory_buffer);
-              stop_source.request_stop();
             });
             union {
               UINT8 data[FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
@@ -299,7 +264,7 @@ class WinFspContext {
             std::vector<FileContext> data;
             FOR_CO_AWAIT(std::vector<FileContext> & page_data,
                          context->ReadDirectory(file_context->context,
-                                                stop_source.get_token())) {
+                                                stdx::stop_token())) {
               for (auto& item : page_data) {
                 data.emplace_back(std::move(item));
               }
@@ -383,21 +348,15 @@ class WinFspContext {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Create");
-
         auto [directory_name, file_name] = SplitPath(ToUnixPath(filename));
         FileContext parent = co_await context->GetFileContext(
-            directory_name, stop_source.get_token());
+            directory_name, stdx::stop_token());
 
         try {
           std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{
-                  .context = co_await context->GetFileContext(
-                      ToUnixPath(filename), stop_source.get_token()),
-                  .path = ToUnixPath(filename)});
+              new FuseFileContext{.context = co_await context->GetFileContext(
+                                      ToUnixPath(filename), stdx::stop_token()),
+                                  .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_OBJECT_NAME_EXISTS;
         } catch (const CloudException&) {
@@ -405,7 +364,7 @@ class WinFspContext {
 
         if (create_options & FILE_DIRECTORY_FILE) {
           FileContext new_item(co_await context->CreateDirectory(
-              parent, file_name, stop_source.get_token()));
+              parent, file_name, stdx::stop_token()));
           ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
           std::unique_ptr<FuseFileContext> fuse_file_context(
               new FuseFileContext{.context = std::move(new_item),
@@ -413,11 +372,10 @@ class WinFspContext {
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         } else {
-          auto new_item =
-              co_await context->Create(std::move(parent), file_name, /*size=*/0,
-                                       stop_source.get_token());
-          new_item = co_await context->Flush(std::move(new_item),
-                                             stop_source.get_token());
+          auto new_item = co_await context->Create(
+              std::move(parent), file_name, /*size=*/0, stdx::stop_token());
+          new_item =
+              co_await context->Flush(std::move(new_item), stdx::stop_token());
           ToFileInfo(FileSystemContext::GetGenericItem(new_item), file_info);
           std::unique_ptr<FuseFileContext> fuse_file_context(
               new FuseFileContext{.context = std::move(new_item),
@@ -455,17 +413,13 @@ class WinFspContext {
     auto file = static_cast<FuseFileContext*>(file_context);
     return context->Do([&]() -> Task<NTSTATUS> {
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Overwrite");
         auto [directory_name, file_name] = SplitPath(file->path);
         auto parent = co_await context->GetFileContext(directory_name,
-                                                       stop_source.get_token());
+                                                       stdx::stop_token());
         auto new_item = co_await context->Create(
-            std::move(parent), file_name, /*size=*/0, stop_source.get_token());
-        file->context = co_await context->Flush(std::move(new_item),
-                                                stop_source.get_token());
+            std::move(parent), file_name, /*size=*/0, stdx::stop_token());
+        file->context =
+            co_await context->Flush(std::move(new_item), stdx::stop_token());
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
@@ -494,13 +448,9 @@ class WinFspContext {
       response.Hint = hint;
       response.IoStatus.Information = 0;
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Read");
         std::string content = co_await context->Read(
             file->context, static_cast<int64_t>(offset),
-            static_cast<int64_t>(length), stop_source.get_token());
+            static_cast<int64_t>(length), stdx::stop_token());
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
@@ -533,17 +483,13 @@ class WinFspContext {
       response.Hint = hint;
       response.IoStatus.Information = 0;
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Write");
         if (!file->context.current_write &&
             !file->context.current_streaming_write) {
           auto [directory_name, file_name] = SplitPath(file->path);
           FileContext parent = co_await context->GetFileContext(
-              directory_name, stop_source.get_token());
+              directory_name, stdx::stop_token());
           file->context = co_await context->Create(
-              parent, file_name, file->size, stop_source.get_token());
+              parent, file_name, file->size, stdx::stop_token());
         }
 
         if (!file->size) {
@@ -619,11 +565,7 @@ class WinFspContext {
     if (flags & FspCleanupDelete) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
-          stdx::stop_source stop_source;
-          auto guard =
-              coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-          InstallTimeout(context, &stop_source, "CleanupDelete");
-          co_await context->Remove(file->context, stop_source.get_token());
+          co_await context->Remove(file->context, stdx::stop_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
           std::cerr << "ERROR " << e.what() << "\n";
@@ -635,19 +577,15 @@ class WinFspContext {
     if (flags & FspCleanupSetLastWriteTime) {
       context->Do([=]() -> Task<NTSTATUS> {
         try {
-          stdx::stop_source stop_source;
-          auto guard =
-              coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-          InstallTimeout(context, &stop_source, "CleanupWriteTime");
           if (!file->context.current_write &&
               !file->context.current_streaming_write) {
             auto [directory_name, file_name] = SplitPath(file->path);
             FileContext parent = co_await context->GetFileContext(
-                directory_name, stop_source.get_token());
+                directory_name, stdx::stop_token());
             file->context = co_await context->Create(
-                parent, file_name, file->size, stop_source.get_token());
+                parent, file_name, file->size, stdx::stop_token());
           }
-          co_await context->Flush(file->context, stop_source.get_token());
+          co_await context->Flush(file->context, stdx::stop_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
           std::cerr << "ERROR " << e.what() << "\n";
@@ -668,10 +606,6 @@ class WinFspContext {
     auto context = static_cast<FileSystemContext*>(fs->UserContext);
     return context->Do([=]() -> Task<NTSTATUS> {
       try {
-        stdx::stop_source stop_source;
-        auto guard =
-            coro::util::AtScopeExit([&] { stop_source.request_stop(); });
-        InstallTimeout(context, &stop_source, "Rename");
         const auto& [source_directory_name, source_file_name] =
             SplitPath(ToUnixPath(file_name));
         const auto& [destination_directory_name, destination_file_name] =
@@ -680,15 +614,14 @@ class WinFspContext {
         auto source_item = reinterpret_cast<FuseFileContext*>(file_context);
         FileContext new_item = {.item = source_item->context.item};
         if (source_file_name != destination_file_name) {
-          new_item = co_await context->Rename(source_item->context,
-                                              destination_file_name,
-                                              stop_source.get_token());
+          new_item = co_await context->Rename(
+              source_item->context, destination_file_name, stdx::stop_token());
         }
         if (source_directory_name != destination_directory_name) {
           auto destination = co_await context->GetFileContext(
-              destination_directory_name, stop_source.get_token());
+              destination_directory_name, stdx::stop_token());
           source_item->context = co_await context->Move(
-              new_item, std::move(destination), stop_source.get_token());
+              new_item, std::move(destination), stdx::stop_token());
         }
 
         co_return STATUS_SUCCESS;
