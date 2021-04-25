@@ -516,8 +516,8 @@ auto FileSystemContext::Create(const FileContext& parent, std::string_view name,
   }
   co_return FileContext{
       .parent = parent.item,
-      .current_streaming_write =
-          std::make_unique<CurrentStreamingWrite>(*parent.item, size, name)};
+      .current_streaming_write = std::make_unique<CurrentStreamingWrite>(
+          &thread_pool_, &event_loop_, &config_, *parent.item, size, name)};
 }
 
 Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
@@ -532,13 +532,13 @@ Task<> FileSystemContext::Write(const FileContext& item, std::string_view chunk,
     }
     if (item.item->GetGenericItem().size == 0) {
       item.current_streaming_write = std::make_unique<CurrentStreamingWrite>(
-          *item.parent, /*size=*/std::nullopt,
-          item.item->GetGenericItem().name);
+          &thread_pool_, &event_loop_, &config_, *item.parent,
+          /*size=*/std::nullopt, item.item->GetGenericItem().name);
     } else {
       throw CloudException("streaming write missing");
     }
   }
-  co_await item.current_streaming_write->Write(&thread_pool_, chunk, offset,
+  co_await item.current_streaming_write->Write(chunk, offset,
                                                std::move(stop_token));
 }
 
@@ -663,8 +663,12 @@ Task<> FileSystemContext::NewFileRead::operator()() {
 }
 
 FileSystemContext::CurrentStreamingWrite::CurrentStreamingWrite(
+    ThreadPool* thread_pool, EventLoop* event_loop, const Config* config,
     Item parent, std::optional<int64_t> size, std::string_view name)
-    : parent_(std::move(parent)),
+    : thread_pool_(thread_pool),
+      event_loop_(event_loop),
+      config_(config),
+      parent_(std::move(parent)),
       size_(size),
       name_(name),
       stop_token_data_(parent_.stop_token()) {
@@ -682,8 +686,7 @@ FileSystemContext::CurrentStreamingWrite::~CurrentStreamingWrite() {
 }
 
 Task<> FileSystemContext::CurrentStreamingWrite::Write(
-    ThreadPool* thread_pool, std::string_view chunk, int64_t offset,
-    stdx::stop_token stop_token) {
+    std::string_view chunk, int64_t offset, stdx::stop_token stop_token) {
   if (flushed_) {
     throw CloudException("write after flush");
   }
@@ -696,15 +699,16 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (!buffer_) {
       buffer_ = CreateTmpFile();
     }
-    co_await WriteFile(thread_pool, buffer_.get(), offset, chunk);
+    co_await WriteFile(thread_pool_, buffer_.get(), offset, chunk);
     ranges_.emplace_back(Range{.offset = offset, .size = chunk.size()});
     co_return;
   }
   current_offset_ += chunk.size();
   current_chunk_.SetValue(std::string(chunk));
-  StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
-                            std::move(stop_token));
-  co_await InterruptibleAwait(done_, stop_token_or.GetToken());
+  ContextStopToken context_stop_token(
+      *event_loop_, "Write", config_->timeout_ms, stop_token,
+      stop_token_data_.stop_token_or.GetToken());
+  co_await InterruptibleAwait(done_, context_stop_token.GetToken());
   done_ = Promise<void>();
   while (true) {
     auto it = std::find_if(ranges_.begin(), ranges_.end(), [&](const auto& d) {
@@ -713,10 +717,13 @@ Task<> FileSystemContext::CurrentStreamingWrite::Write(
     if (it == ranges_.end()) {
       break;
     }
+    ContextStopToken context_stop_token(
+        *event_loop_, "Write", config_->timeout_ms, stop_token,
+        stop_token_data_.stop_token_or.GetToken());
     current_chunk_.SetValue(
-        co_await ReadFile(thread_pool, buffer_.get(), it->offset, it->size));
+        co_await ReadFile(thread_pool_, buffer_.get(), it->offset, it->size));
     current_offset_ += it->size;
-    co_await InterruptibleAwait(done_, stop_token_or.GetToken());
+    co_await InterruptibleAwait(done_, context_stop_token.GetToken());
     done_ = Promise<void>();
   };
 }
@@ -728,10 +735,12 @@ auto FileSystemContext::CurrentStreamingWrite::Flush(
   }
   flushed_ = true;
   current_chunk_.SetValue(std::string());
-  StopTokenOr stop_token_or(stop_token_data_.stop_token_or.GetToken(),
-                            std::move(stop_token));
-  co_return Item(parent_.account, co_await InterruptibleAwait(
-                                      item_promise_, stop_token_or.GetToken()));
+  ContextStopToken context_stop_token(
+      *event_loop_, "Flush", config_->timeout_ms, std::move(stop_token),
+      stop_token_data_.stop_token_or.GetToken());
+  co_return Item(parent_.account,
+                 co_await InterruptibleAwait(item_promise_,
+                                             context_stop_token.GetToken()));
 }
 
 auto FileSystemContext::CurrentStreamingWrite::CreateFile()

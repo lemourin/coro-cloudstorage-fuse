@@ -245,18 +245,20 @@ class FileSystemContext {
 
   class CurrentStreamingWrite {
    public:
-    CurrentStreamingWrite(Item parent, std::optional<int64_t> size,
-                          std::string_view name);
+    CurrentStreamingWrite(ThreadPool*, EventLoop*, const Config*, Item parent,
+                          std::optional<int64_t> size, std::string_view name);
     ~CurrentStreamingWrite();
 
-    Task<> Write(ThreadPool*, std::string_view chunk, int64_t offset,
-                 stdx::stop_token);
+    Task<> Write(std::string_view chunk, int64_t offset, stdx::stop_token);
     Task<Item> Flush(stdx::stop_token);
 
    private:
     Generator<std::string> GetStream();
     Task<AbstractCloudProviderT::Item> CreateFile();
 
+    ThreadPool* thread_pool_;
+    EventLoop* event_loop_;
+    const Config* config_;
     Item parent_;
     std::optional<int64_t> size_;
     std::string name_;
@@ -380,7 +382,7 @@ class FileSystemContext {
   };
 
   event_base* event_base_;
-  coro::util::EventLoop event_loop_;
+  EventLoop event_loop_;
   std::vector<std::shared_ptr<Account>> accounts_;
   bool quit_called_ = false;
   std::optional<Http> http_;
