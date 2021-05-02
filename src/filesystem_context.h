@@ -5,6 +5,7 @@
 #include <coro/cloudstorage/cloud_exception.h>
 #include <coro/cloudstorage/cloud_factory.h>
 #include <coro/cloudstorage/cloud_provider.h>
+#include <coro/cloudstorage/providers/amazon_s3.h>
 #include <coro/cloudstorage/providers/box.h>
 #include <coro/cloudstorage/providers/dropbox.h>
 #include <coro/cloudstorage/providers/google_drive.h>
@@ -98,7 +99,7 @@ class FileSystemContext {
 
   using CloudProviders =
       coro::util::TypeList<GoogleDrive, Mega, OneDrive, Dropbox, Box,
-                           YandexDisk, PCloud, WebDAV>;
+                           YandexDisk, PCloud, WebDAV, AmazonS3>;
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviders, CloudFactoryT,
