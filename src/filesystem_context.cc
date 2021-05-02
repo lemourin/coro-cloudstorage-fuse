@@ -23,14 +23,6 @@ using ::coro::util::StopTokenOr;
 using ::coro::util::ThreadPool;
 using ::coro::util::TypeList;
 
-template <typename T>
-concept HasUsageData = requires(T v) {
-  { v.space_used }
-  ->stdx::convertible_to<std::optional<int64_t>>;
-  { v.space_total }
-  ->stdx::convertible_to<std::optional<int64_t>>;
-};
-
 class TimingOutStopToken {
  public:
   TimingOutStopToken(const FileSystemContext::EventLoop& event_loop,
