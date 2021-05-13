@@ -35,7 +35,10 @@ if(WIN32)
     target_link_libraries(coro-cloudstorage-fuse PRIVATE ${winfsp_LIBRARY} mpr ntdll)
     target_include_directories(coro-cloudstorage-fuse PRIVATE ${winfsp_INCLUDE})
 
-    set_target_properties(coro-cloudstorage-fuse PROPERTIES LINK_FLAGS "/DELAYLOAD:winfsp-${ARCH}.dll delayimp.lib" )
+    if(MSVC)
+        set_target_properties(coro-cloudstorage-fuse PROPERTIES
+                              LINK_FLAGS "/DELAYLOAD:winfsp-${ARCH}.dll delayimp.lib")
+    endif()
 else()
     target_sources(coro-cloudstorage-fuse PRIVATE
         src/fuse_posix.cc
