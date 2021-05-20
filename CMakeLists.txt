@@ -12,7 +12,9 @@ add_executable(coro-cloudstorage-fuse ${OPTIONS})
 target_sources(coro-cloudstorage-fuse PRIVATE
     src/main.cc
     src/filesystem_context.h
-    src/filesystem_context.cc)
+    src/filesystem_context.cc
+    src/sparse_file.h
+    src/sparse_file.cc)
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
 

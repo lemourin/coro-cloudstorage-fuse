@@ -34,6 +34,8 @@
 
 #include <future>
 
+#include "sparse_file.h"
+
 namespace coro::cloudstorage {
 
 namespace internal {
@@ -188,29 +190,6 @@ class FileSystemContext {
     StopTokenData(stdx::stop_token root_token)
         : stop_token_or(std::move(root_token), stop_source.get_token()) {}
     ~StopTokenData() { stop_source.request_stop(); }
-  };
-
-  struct Range {
-    int64_t offset;
-    size_t size;
-
-    bool operator<(const Range& other) const {
-      return std::tie(offset, size) < std::tie(other.offset, other.size);
-    }
-  };
-
-  class SparseFile {
-   public:
-    SparseFile();
-
-    Task<> Write(ThreadPool*, int64_t offset, std::string_view chunk);
-    Task<std::optional<std::string>> Read(ThreadPool* thread_pool,
-                                          int64_t offset, size_t size) const;
-
-   private:
-    std::set<Range> ranges_;
-    std::unique_ptr<FILE, util::FileDeleter> file_;
-    mutable Mutex mutex_;
   };
 
   struct QueuedRead {
@@ -378,8 +357,9 @@ class FileSystemContext {
   struct SparseFileFactory {
     Task<std::shared_ptr<SparseFile>> operator()(const CacheKey&,
                                                  stdx::stop_token) const {
-      co_return std::make_shared<SparseFile>();
+      co_return std::make_shared<SparseFile>(thread_pool);
     }
+    ThreadPool* thread_pool;
   };
 
   event_base* event_base_;
@@ -388,9 +368,9 @@ class FileSystemContext {
   bool quit_called_ = false;
   std::optional<Http> http_;
   Config config_;
+  mutable ThreadPool thread_pool_;
   mutable coro::util::LRUCache<CacheKey, SparseFileFactory, HashCacheKey>
       content_cache_;
-  mutable ThreadPool thread_pool_;
   ThumbnailGenerator thumbnail_generator_;
   util::Muxer muxer_;
   CloudFactoryT cloud_factory_;

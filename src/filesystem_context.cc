@@ -80,26 +80,6 @@ ContextStopToken GetToken(const FileSystemContext::EventLoop& event_loop,
                           std::move(stop_token), context.item->stop_token());
 }
 
-FileSystemContext::Range Add(const FileSystemContext::Range& r1,
-                             const FileSystemContext::Range& r2) {
-  return FileSystemContext::Range{
-      .offset = std::min<int64_t>(r1.offset, r2.offset),
-      .size = static_cast<size_t>(
-          std::max<int64_t>(r1.offset + r1.size, r2.offset + r2.size) -
-          std::min<int64_t>(r1.offset, r2.offset))};
-}
-
-bool Intersects(const FileSystemContext::Range& r1,
-                const FileSystemContext::Range& r2) {
-  return std::max<int64_t>(r1.offset, r2.offset) <=
-         std::min<int64_t>(r1.offset + r1.size, r2.offset + r2.size);
-}
-
-bool IsInside(const FileSystemContext::Range& r1,
-              const FileSystemContext::Range& r2) {
-  return r1.offset >= r2.offset && r1.offset + r1.size <= r2.offset + r2.size;
-}
-
 }  // namespace
 
 auto FileSystemContext::Item::provider() const -> AbstractCloudProviderT {
@@ -141,8 +121,9 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       event_loop_(event_base_),
       http_(http::CurlHttp(event_base)),
       config_(config),
-      content_cache_(config_.cache_size, SparseFileFactory{}),
       thread_pool_(event_loop_),
+      content_cache_(config_.cache_size,
+                     SparseFileFactory{.thread_pool = &thread_pool_}),
       thumbnail_generator_(&thread_pool_, &event_loop_),
       muxer_(&event_loop_, &thread_pool_),
       cloud_factory_(event_loop_, *http_, thumbnail_generator_, muxer_),
@@ -329,8 +310,8 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
     context.current_read = CurrentRead{.current_offset = INT64_MAX};
   }
   CurrentRead& current_read = *context.current_read;
-  if (std::optional<std::string> chunk = co_await cache_file->Read(
-          &thread_pool_, offset, static_cast<size_t>(size))) {
+  if (std::optional<std::string> chunk =
+          co_await cache_file->Read(offset, static_cast<size_t>(size))) {
     co_return std::move(*chunk);
   }
   if (current_read.pending) {
@@ -388,8 +369,7 @@ Task<std::string> FileSystemContext::Read(const FileContext& context,
   auto time = std::chrono::system_clock::now();
   std::string chunk;
   auto append = [&](std::string current_chunk) -> Task<> {
-    co_await cache_file->Write(&thread_pool_, current_read.current_offset,
-                               current_chunk);
+    co_await cache_file->Write(current_read.current_offset, current_chunk);
     int64_t chunk_size = static_cast<int64_t>(current_chunk.size());
     if (current_read.current_offset + chunk_size - 1 >= requested_offset &&
         current_read.current_offset < requested_offset) {
@@ -763,58 +743,6 @@ Generator<std::string> FileSystemContext::CurrentStreamingWrite::GetStream() {
   if (parent_.provider().IsFileContentSizeRequired() &&
       size_ != current_offset_) {
     throw CloudException("incomplete file");
-  }
-}
-
-FileSystemContext::SparseFile::SparseFile() : file_(CreateTmpFile()) {}
-
-Task<> FileSystemContext::SparseFile::Write(ThreadPool* thread_pool,
-                                            int64_t offset,
-                                            std::string_view chunk) {
-  auto lock = co_await UniqueLock::Create(&mutex_);
-  co_await WriteFile(thread_pool, file_.get(), offset, chunk);
-  Range range{.offset = offset, .size = chunk.size()};
-  if (ranges_.empty()) {
-    ranges_.insert(range);
-  } else {
-    auto it = ranges_.upper_bound(
-        Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
-    while (
-        it != ranges_.end() &&
-        Intersects(Range{.offset = it->offset - 1, .size = it->size}, range)) {
-      range = Add(range, *it);
-      it = ranges_.erase(it);
-    }
-    if (!ranges_.empty() && it != ranges_.begin()) {
-      it = std::prev(it);
-      while (it != ranges_.end() &&
-             Intersects(Range{.offset = it->offset, .size = it->size + 1},
-                        range)) {
-        range = Add(range, *it);
-        it = ranges_.erase(it);
-        if (!ranges_.empty() && it != ranges_.begin()) {
-          it = std::prev(it);
-        } else {
-          break;
-        }
-      }
-    }
-    ranges_.insert(range);
-  }
-}
-
-Task<std::optional<std::string>> FileSystemContext::SparseFile::Read(
-    ThreadPool* thread_pool, int64_t offset, size_t size) const {
-  auto it = ranges_.upper_bound(
-      Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
-  if (ranges_.empty() || it == ranges_.begin()) {
-    co_return std::nullopt;
-  }
-  if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
-    auto lock = co_await UniqueLock::Create(&mutex_);
-    co_return co_await ReadFile(thread_pool, file_.get(), offset, size);
-  } else {
-    co_return std::nullopt;
   }
 }
 
