@@ -96,7 +96,7 @@ auto FileSystemContext::Item::GetGenericItem() const -> GenericItem {
   return AbstractCloudProviderT::ToGenericItem(item);
 }
 
-auto FileSystemContext::Item::GetAccount() const -> std::shared_ptr<Account> {
+auto FileSystemContext::Item::GetAccount() const -> std::shared_ptr<AccountT> {
   auto acc = account.lock();
   if (!acc) {
     throw CloudException(CloudException::Type::kNotFound);
@@ -105,7 +105,7 @@ auto FileSystemContext::Item::GetAccount() const -> std::shared_ptr<Account> {
 }
 
 void FileSystemContext::AccountListener::OnCreate(CloudProviderAccount* d) {
-  context->accounts_.emplace_back(std::make_shared<Account>(d));
+  context->accounts_.emplace_back(std::make_shared<AccountT>(d));
   std::cerr << "CREATED " << d->GetId() << "\n";
 }
 
@@ -613,7 +613,7 @@ auto FileSystemContext::FlushBufferedUpload(const FileContext& context,
 }
 
 auto FileSystemContext::GetAccount(std::string_view name) const
-    -> std::shared_ptr<Account> {
+    -> std::shared_ptr<AccountT> {
   auto it = std::find_if(accounts_.begin(), accounts_.end(),
                          [name](const auto& d) { return d->id() == name; });
   if (it == accounts_.end()) {

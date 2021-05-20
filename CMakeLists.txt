@@ -14,7 +14,8 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/filesystem_context.h
     src/filesystem_context.cc
     src/sparse_file.h
-    src/sparse_file.cc)
+    src/sparse_file.cc
+    src/account.h)
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
 

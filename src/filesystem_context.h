@@ -34,6 +34,7 @@
 
 #include <future>
 
+#include "account.h"
 #include "sparse_file.h"
 
 namespace coro::cloudstorage {
@@ -124,63 +125,18 @@ class FileSystemContext {
   using AbstractCloudProviderT = AbstractCloudProvider::CloudProvider;
 
   using GenericItem = AbstractCloudProvider::GenericItem;
-
-  class Account {
-   public:
-    explicit Account(CloudProviderAccount* account) : account_(account) {}
-
-    CloudProviderAccount* account() const { return account_; }
-    auto& stop_source() const { return account()->stop_source; }
-    auto& provider() const { return account()->provider; }
-    auto id() const { return account()->GetId(); }
-
-    std::optional<int64_t> GetTimeToFirstByte() const {
-      if (time_to_first_byte_sample_cnt_ == 0) {
-        return std::nullopt;
-      }
-      return time_to_first_byte_sum_ / std::chrono::milliseconds(1) /
-             time_to_first_byte_sample_cnt_;
-    }
-
-    std::optional<int64_t> GetDownloadSpeed() const {
-      if (download_speed_sum_ / std::chrono::milliseconds(1) == 0) {
-        return std::nullopt;
-      }
-      return download_size_ /
-             (download_speed_sum_ / std::chrono::milliseconds(1));
-    }
-
-    void RegisterTimeToFirstByte(std::chrono::system_clock::duration time) {
-      time_to_first_byte_sum_ += time;
-      time_to_first_byte_sample_cnt_++;
-    }
-
-    void RegisterDownloadSpeed(std::chrono::system_clock::duration time,
-                               int64_t chunk_size) {
-      download_speed_sum_ += time;
-      download_size_ += chunk_size;
-    }
-
-   private:
-    CloudProviderAccount* account_;
-    std::chrono::system_clock::duration time_to_first_byte_sum_ =
-        std::chrono::seconds(0);
-    int64_t time_to_first_byte_sample_cnt_ = 0;
-    std::chrono::system_clock::duration download_speed_sum_ =
-        std::chrono::seconds(0);
-    int64_t download_size_ = 0;
-  };
+  using AccountT = Account<CloudProviderAccount>;
 
   struct Item {
-    Item(std::weak_ptr<Account> account, AbstractCloudProviderT::Item item)
+    Item(std::weak_ptr<AccountT> account, AbstractCloudProviderT::Item item)
         : account(std::move(account)), item(std::move(item)) {}
 
     AbstractCloudProviderT provider() const;
     stdx::stop_token stop_token() const;
     GenericItem GetGenericItem() const;
-    std::shared_ptr<Account> GetAccount() const;
+    std::shared_ptr<AccountT> GetAccount() const;
 
-    std::weak_ptr<Account> account;
+    std::weak_ptr<AccountT> account;
     AbstractCloudProviderT::Item item;
   };
 
@@ -331,7 +287,7 @@ class FileSystemContext {
   Task<FileContext> FlushBufferedUpload(const FileContext& item,
                                         stdx::stop_token);
 
-  std::shared_ptr<Account> GetAccount(std::string_view name) const;
+  std::shared_ptr<AccountT> GetAccount(std::string_view name) const;
 
   struct CacheKey {
     intptr_t account_id;
@@ -364,7 +320,7 @@ class FileSystemContext {
 
   event_base* event_base_;
   EventLoop event_loop_;
-  std::vector<std::shared_ptr<Account>> accounts_;
+  std::vector<std::shared_ptr<AccountT>> accounts_;
   bool quit_called_ = false;
   std::optional<Http> http_;
   Config config_;
