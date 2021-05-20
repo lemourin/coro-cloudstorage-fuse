@@ -26,6 +26,7 @@
 
 #include "account.h"
 #include "auth_data.h"
+#include "filesystem_provider.h"
 #include "sparse_file.h"
 
 namespace coro::cloudstorage {

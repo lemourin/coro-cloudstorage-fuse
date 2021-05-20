@@ -11,6 +11,7 @@
 #include <iostream>
 
 #include "filesystem_context.h"
+#include "filesystem_provider.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -18,7 +19,9 @@ namespace {
 
 using ::coro::util::AtScopeExit;
 
-using FileContext = FileSystemContext::FileContext;
+using FileSystemContext =
+    FileSystemProvider<coro::cloudstorage::Mega::CloudProvider>;
+using FileContext = FileSystemContext::ItemContextT;
 
 constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
 constexpr int kMetadataTimeout = 10;
@@ -83,6 +86,7 @@ struct FuseFileContext {
   std::optional<int64_t> size;
   std::optional<std::string> name;
   std::optional<ItemId> id;
+  bool written_to;
 };
 
 struct FuseContext {
@@ -168,16 +172,14 @@ constexpr auto CoroutineT =
     Coroutine<F, coro::util::ArgumentListTypeT<decltype(F)>>::Do;
 
 ItemId GetItemId(const FileContext& context) {
-  return ItemId{.account_type = context.item->provider().type(),
-                .account_id = context.item->GetAccount()->id(),
-                .item_id = FileSystemContext::GetGenericItem(context).id};
+  //  return ItemId{.account_type = context.item->provider().type(),
+  //                .account_id = context.item->GetAccount()->id(),
+  //                .item_id = FileSystemContext::GetGenericItem(context).id};
+  return ItemId{.item_id = context.GetId()};
 }
 
 fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
                       FileContext file_context) {
-  if (!file_context.item) {
-    throw std::invalid_argument("invalid context");
-  }
   auto item_id = GetItemId(file_context);
   if (auto it = context->inode.find(item_id); it != std::end(context->inode)) {
     context->file_context[it->second].context = std::move(file_context);
@@ -199,7 +201,7 @@ Task<FileContext> FindFile(FuseContext* context, const FuseFileContext& parent,
       std::vector<FileContext> & page,
       context->context.ReadDirectory(parent.context, std::move(stop_token))) {
     for (FileContext& file_context : page) {
-      if (name == FileSystemContext::GetGenericItem(file_context).name) {
+      if (name == file_context.GetName()) {
         co_return std::move(file_context);
       }
     }
@@ -207,23 +209,23 @@ Task<FileContext> FindFile(FuseContext* context, const FuseFileContext& parent,
   throw CloudException(CloudException::Type::kNotFound);
 }
 
-struct stat ToStat(const FileSystemContext::GenericItem& item, fuse_ino_t ino) {
+struct stat ToStat(const FileContext& item, fuse_ino_t ino) {
   struct stat stat = {};
-  stat.st_mode = (item.type == FileSystemContext::GenericItem::Type::kDirectory
-                      ? S_IFDIR
-                      : S_IFREG) |
-                 0644;
-  stat.st_size = item.size.value_or(0);
-  stat.st_mtim.tv_sec = item.timestamp.value_or(0);
+  stat.st_mode =
+      (item.GetType() == FileContext::ItemType::kDirectory ? S_IFDIR
+                                                           : S_IFREG) |
+      0644;
+  stat.st_size = item.GetSize().value_or(0);
+  stat.st_mtim.tv_sec = item.GetTimestamp().value_or(0);
   stat.st_ino = ino;
   return stat;
 }
 
 fuse_entry_param CreateFuseEntry(FuseContext* context, fuse_ino_t parent,
                                  FileContext entry) {
-  auto item = FileSystemContext::GetGenericItem(entry);
   fuse_entry_param fuse_entry = {};
-  fuse_entry.attr = ToStat(item, CreateNode(context, parent, std::move(entry)));
+  auto ino = CreateNode(context, parent, std::move(entry));
+  fuse_entry.attr = ToStat(context->file_context[ino].context, ino);
   context->file_context[fuse_entry.attr.st_ino].refcount++;
   fuse_entry.attr_timeout = kMetadataTimeout;
   fuse_entry.entry_timeout = kMetadataTimeout;
@@ -257,8 +259,8 @@ Task<> GetAttr(fuse_req_t req, fuse_ino_t ino, fuse_file_info*) {
     co_await promise.Get(stop_source.get_token());
   }
   struct stat stat {};
-  if (ino == FUSE_ROOT_ID || it->second.context.item) {
-    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context), ino);
+  if (ino == FUSE_ROOT_ID || !it->second.context.IsPending()) {
+    stat = ToStat(it->second.context, ino);
   } else {
     stat.st_mode = S_IFREG | 0644;
     stat.st_ino = ino;
@@ -282,8 +284,8 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
     co_return;
   }
   struct stat stat = {};
-  if (it->second.context.item) {
-    stat = ToStat(FileSystemContext::GetGenericItem(it->second.context), ino);
+  if (!it->second.context.IsPending()) {
+    stat = ToStat(it->second.context, ino);
   } else {
     stat.st_mode = S_IFREG | 0644;
     stat.st_ino = ino;
@@ -293,7 +295,7 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
   }
   if (to_set & FUSE_SET_ATTR_SIZE) {
     auto file_context = reinterpret_cast<FuseFileContext*>(fi->fh);
-    if (attr->st_size == 0 && it->second.context.item) {
+    if (attr->st_size == 0 && !it->second.context.IsPending()) {
       auto parent_it = context->file_context.find(it->second.parent);
       if (parent_it == context->file_context.end()) {
         fuse_reply_err(req, ENOENT);
@@ -302,15 +304,14 @@ Task<> SetAttr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set,
       stdx::stop_source stop_source;
       fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
       it->second.context = co_await context->context.Flush(
-          co_await context->context.Create(
-              parent_it->second.context,
-              FileSystemContext::GetGenericItem(it->second.context).name,
-              /*size=*/0, stop_source.get_token()),
+          co_await context->context.Create(parent_it->second.context,
+                                           it->second.context.GetName(),
+                                           /*size=*/0, stop_source.get_token()),
           stop_source.get_token());
       if (file_context) {
-        file_context->context.item = it->second.context.item;
+        file_context->context = FileContext::From(it->second.context);
       }
-    } else if (it->second.context.item) {
+    } else if (!it->second.context.IsPending()) {
       fuse_reply_err(req, EINVAL);
       co_return;
     }
@@ -335,11 +336,10 @@ Task<> Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     const auto& promise = it->second.flush->promise;
     co_await promise.Get(stop_source.get_token());
   }
-  fi->fh = reinterpret_cast<uint64_t>(new FuseFileContext{
-      .context = FileContext{.item = it->second.context.item,
-                             .parent = it->second.context.parent},
-      .parent = it->second.parent,
-      .flags = fi->flags});
+  fi->fh = reinterpret_cast<uint64_t>(
+      new FuseFileContext{.context = FileContext::From(it->second.context),
+                          .parent = it->second.parent,
+                          .flags = fi->flags});
   if (fuse_reply_open(req, fi) != 0) {
     delete reinterpret_cast<FuseFileContext*>(fi->fh);
   }
@@ -359,8 +359,7 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   }
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
-  if (!file_context->context.current_write &&
-      !file_context->context.current_streaming_write && file_context->name) {
+  if (!file_context->written_to && file_context->name) {
     auto parent_it = context->file_context.find(file_context->parent);
     if (parent_it == context->file_context.end()) {
       fuse_reply_err(req, ENOENT);
@@ -370,8 +369,7 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
         parent_it->second.context, *file_context->name, 0,
         stop_source.get_token());
   }
-  if (file_context->context.current_write ||
-      file_context->context.current_streaming_write) {
+  if (file_context->written_to) {
     auto it = context->file_context.find(ino);
     if (it == std::end(context->file_context)) {
       fuse_reply_err(req, ENOENT);
@@ -450,16 +448,16 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
       stop_source.get_token());
   for (int i = read_dir_token.offset; i < page.items.size(); i++) {
     FileContext& entry = page.items[i];
-    auto generic_item = FileSystemContext::GetGenericItem(entry);
+    std::string name(entry.GetName());
     fuse_entry_param fuse_entry = {};
-    fuse_entry.attr =
-        ToStat(generic_item, CreateNode(context, ino, std::move(entry)));
+    auto new_node = CreateNode(context, ino, std::move(entry));
+    fuse_entry.attr = ToStat(context->file_context[new_node].context, new_node);
     fuse_entry.generation = 1;
     fuse_entry.ino = fuse_entry.attr.st_ino;
     fuse_entry.attr_timeout = kMetadataTimeout;
     fuse_entry.entry_timeout = kMetadataTimeout;
-    auto entry_size = fuse_add_direntry_plus(
-        req, nullptr, 0, generic_item.name.c_str(), nullptr, 0);
+    auto entry_size =
+        fuse_add_direntry_plus(req, nullptr, 0, name.c_str(), nullptr, 0);
     if (offset + entry_size < size) {
       context->file_context[fuse_entry.ino].refcount++;
       ReadDirToken next_token;
@@ -472,9 +470,9 @@ Task<> ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
       } else {
         next_token = {.page_index = read_dir_token.page_index, .offset = i + 1};
       }
-      offset += fuse_add_direntry_plus(
-          req, buffer.data() + offset, size - offset, generic_item.name.c_str(),
-          &fuse_entry, EncodeReadDirToken(next_token));
+      offset += fuse_add_direntry_plus(req, buffer.data() + offset,
+                                       size - offset, name.c_str(), &fuse_entry,
+                                       EncodeReadDirToken(next_token));
     } else {
       break;
     }
@@ -552,7 +550,7 @@ Task<> Rename(fuse_req_t req, fuse_ino_t parent, const char* name_c_str,
                                        stop_source.get_token());
   auto previous_id = GetItemId(source_item);
 
-  FileContext new_item = {.item = source_item.item};
+  FileContext new_item = FileContext::From(source_item);
   if (name != new_name) {
     new_item = co_await context->context.Rename(source_item, new_name,
                                                 stop_source.get_token());
@@ -641,8 +639,7 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   stdx::stop_source stop_source;
   fuse_req_interrupt_func(req, InterruptRequest, &stop_source);
   std::string buf(buf_cstr, size);
-  if (!file_context->context.current_write &&
-      !file_context->context.current_streaming_write && file_context->name) {
+  if (!file_context->written_to && file_context->name) {
     auto parent_it = context->file_context.find(file_context->parent);
     if (parent_it == context->file_context.end()) {
       fuse_reply_err(req, ENOENT);
@@ -654,6 +651,7 @@ Task<> Write(fuse_req_t req, fuse_ino_t ino, const char* buf_cstr, size_t size,
   }
   co_await context->context.Write(file_context->context, buf, off,
                                   stop_source.get_token());
+  file_context->written_to = true;
   it->second.size = std::max<int64_t>(it->second.size.value_or(0), off + size);
   fuse_reply_write(req, size);
 }
@@ -705,40 +703,50 @@ Task<> StatFs(fuse_req_t req, fuse_ino_t ino) {
   fuse_reply_statfs(req, &stat);
 }
 
-}  // namespace
-
-int Run(int argc, char** argv) {
+Task<int> CoRun(int argc, char** argv, event_base* event_base) {
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
   std::unique_ptr<fuse_conn_info_opts, FreeDeleter> conn_opts(
       fuse_parse_conn_info_opts(&args));
   fuse_cmdline_opts options;
   if (fuse_parse_cmdline(&args, &options) != 0) {
-    return -1;
+    co_return -1;
   }
   auto options_guard = AtScopeExit([&] { free(options.mountpoint); });
   if (options.show_help) {
     fuse_cmdline_help();
     fuse_lib_help(&args);
-    return 0;
+    co_return 0;
   }
   if (options.show_version) {
     fuse_lowlevel_version();
-    return 0;
+    co_return 0;
   }
   if (!options.mountpoint) {
     std::cerr << "Mountpoint not specified.\n";
-    return -1;
+    co_return -1;
   }
-  std::unique_ptr<event_base, EventBaseDeleter> event_base([] {
-    evthread_use_pthreads();
-    return event_base_new();
-  }());
+  coro::util::EventLoop event_loop(event_base);
+  coro::util::ThreadPool thread_pool(event_loop);
+  coro::http::CacheHttp<coro::http::CurlHttp> http{
+      coro::http::CurlHttp(event_base)};
+  coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator(&thread_pool,
+                                                                   &event_loop);
+  coro::cloudstorage::util::Muxer muxer(&event_loop, &thread_pool);
+  coro::cloudstorage::CloudFactory factory(event_loop, http,
+                                           thumbnail_generator, muxer);
+  coro::cloudstorage::util::AuthTokenManager auth_token_manager;
+  auto provider = factory.Create<coro::cloudstorage::Mega>(
+      std::get<coro::cloudstorage::util::AuthToken<coro::cloudstorage::Mega>>(
+          auth_token_manager
+              .LoadTokenData<coro::util::TypeList<coro::cloudstorage::Mega>>()
+              .front()));
   struct CallbackData {
     event fuse_event;
     event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])];
     FuseContext* context;
     fuse_session* session;
+    Promise<void> quit;
   } cb_data = {};
   std::unique_ptr<fuse_session, FuseSessionDeleter> session;
   fuse_lowlevel_ops operations = {.init = Init,
@@ -761,14 +769,14 @@ int Run(int argc, char** argv) {
                                   .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};
   try {
-    FuseContext context{.context = FileSystemContext(event_base.get()),
-                        .conn_opts = conn_opts.get()};
+    FuseContext context{
+        .context = FileSystemProvider(&provider, &event_loop, &thread_pool),
+        .conn_opts = conn_opts.get()};
     cb_data.context = &context;
-    auto context_guard = AtScopeExit([&] {
-      context.context.Quit();
-      event_base_dispatch(event_base.get());
-    });
-    context.file_context.emplace(FUSE_ROOT_ID, FuseFileContext{});
+    context.file_context.emplace(
+        FUSE_ROOT_ID,
+        FuseFileContext{
+            .context = co_await context.context.GetRoot(stdx::stop_token())});
     session =
         std::unique_ptr<fuse_session, FuseSessionDeleter>(fuse_session_new(
             &args, &operations, sizeof(fuse_lowlevel_ops), &context));
@@ -782,7 +790,7 @@ int Run(int argc, char** argv) {
 
     int fd = fuse_session_fd(session.get());
     CheckEvent(event_assign(
-        &cb_data.fuse_event, event_base.get(), fd, EV_READ | EV_PERSIST,
+        &cb_data.fuse_event, event_base, fd, EV_READ | EV_PERSIST,
         [](evutil_socket_t fd, short, void* d) {
           auto data = reinterpret_cast<CallbackData*>(d);
 
@@ -801,7 +809,7 @@ int Run(int argc, char** argv) {
             for (event& e : data->signal_event) {
               event_del(&e);
             }
-            data->context->context.Quit();
+            data->quit.SetValue();
             return;
           }
         },
@@ -816,12 +824,12 @@ int Run(int argc, char** argv) {
         for (event& e : data->signal_event) {
           event_del(&e);
         }
-        data->context->context.Quit();
+        data->quit.SetValue();
       }
     };
     for (size_t i = 0; i < sizeof(kHandledSignals) / sizeof(kHandledSignals[0]);
          i++) {
-      CheckEvent(event_assign(&cb_data.signal_event[i], event_base.get(),
+      CheckEvent(event_assign(&cb_data.signal_event[i], event_base,
                               kHandledSignals[i], EV_SIGNAL, on_signal,
                               &cb_data));
       CheckEvent(event_add(&cb_data.signal_event[i], nullptr));
@@ -829,14 +837,29 @@ int Run(int argc, char** argv) {
     if (fuse_daemonize(options.foreground) != 0) {
       throw std::runtime_error("fuse_daemonize failed");
     }
-    if (event_base_dispatch(event_base.get()) != 1) {
-      throw std::runtime_error("event_base_dispatch failed");
-    }
-    return 0;
+    co_await cb_data.quit;
+    co_return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
-    return -1;
+    co_return -1;
   }
+}
+
+}  // namespace
+
+int Run(int argc, char** argv) {
+  std::unique_ptr<event_base, EventBaseDeleter> event_base([] {
+    evthread_use_pthreads();
+    return event_base_new();
+  }());
+  int status = 0;
+  coro::Invoke([&]() -> Task<> {
+    status = co_await CoRun(argc, argv, event_base.get());
+  });
+  if (event_base_dispatch(event_base.get()) != 1) {
+    throw std::runtime_error("event_base_dispatch failed");
+  }
+  return status;
 }
 
 }  // namespace coro::cloudstorage::fuse
