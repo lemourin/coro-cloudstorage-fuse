@@ -39,7 +39,7 @@ Task<> SparseFile::Write(int64_t offset, std::string_view chunk) {
     ranges_.insert(range);
   } else {
     auto it = ranges_.upper_bound(
-        Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
+        Range{.offset = offset, .size = (std::numeric_limits<size_t>::max)()});
     while (
         it != ranges_.end() &&
         Intersects(Range{.offset = it->offset - 1, .size = it->size}, range)) {
@@ -67,7 +67,7 @@ Task<> SparseFile::Write(int64_t offset, std::string_view chunk) {
 Task<std::optional<std::string>> SparseFile::Read(int64_t offset,
                                                   size_t size) const {
   auto it = ranges_.upper_bound(
-      Range{.offset = offset, .size = std::numeric_limits<size_t>::max()});
+      Range{.offset = offset, .size = (std::numeric_limits<size_t>::max)()});
   if (ranges_.empty() || it == ranges_.begin()) {
     co_return std::nullopt;
   }

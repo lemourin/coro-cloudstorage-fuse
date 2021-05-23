@@ -63,12 +63,9 @@ class ItemContext {
   struct NewFileRead {
     Task<> operator()();
 
-    template <typename Item>
-    Generator<std::string> Read(const Item&);
-
     CloudProvider* provider;
     coro::util::ThreadPool* thread_pool;
-    Item item;
+    File item;
     std::FILE* file;
     stdx::stop_token stop_token;
   };
@@ -102,19 +99,13 @@ class ItemContext {
 };
 
 template <typename CloudProvider>
-template <typename Item>
-Generator<std::string> ItemContext<CloudProvider>::NewFileRead::Read(
-    const Item& d) {
-  if constexpr (IsFile<Item, CloudProvider>) {
-    return provider->GetFileContent(d, http::Range{}, std::move(stop_token));
-  } else {
-    throw CloudException("file not readable");
-  }
-}
-
-template <typename CloudProvider>
 Task<> ItemContext<CloudProvider>::NewFileRead::operator()() {
-  auto generator = std::visit([&](const auto& d) { return Read(d); }, item);
+  auto generator = std::visit(
+      [&](const auto& d) {
+        return provider->GetFileContent(d, http::Range{},
+                                        std::move(stop_token));
+      },
+      item);
   FOR_CO_AWAIT(std::string & chunk, std::move(generator)) {
     if (co_await thread_pool->Invoke(fwrite, chunk.data(), 1, chunk.size(),
                                      file) != chunk.size()) {

@@ -238,7 +238,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
   CurrentRead& current_read = *context.current_read_;
   if (std::optional<std::string> chunk =
           co_await cache_file->Read(offset, static_cast<size_t>(size))) {
-    co_return *chunk;
+    co_return* chunk;
   }
   if (current_read.pending) {
     QueuedRead read{.offset = offset};
@@ -493,7 +493,7 @@ Task<> FileSystemProvider<CloudProvider>::WriteToBufferedUpload(
     auto file = util::CreateTmpFile();
     NewFileRead read{.provider = provider_,
                      .thread_pool = thread_pool_,
-                     .item = *context.item_,
+                     .item = std::get<File>(*context.item_),
                      .file = file.get()};
     context.current_write_ =
         CurrentWrite{.tmpfile = std::move(file),
