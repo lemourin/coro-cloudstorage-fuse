@@ -19,8 +19,29 @@ namespace {
 
 using ::coro::util::AtScopeExit;
 
-using FileSystemContext =
-    FileSystemProvider<coro::cloudstorage::Mega::CloudProvider>;
+using CloudProvider = Mega;
+using HttpT = http::CacheHttp<http::CurlHttp>;
+using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
+                                   util::ThumbnailGenerator, util::Muxer>;
+
+template <typename CloudProvider, typename Factory>
+auto CreateCloudProvider(const Factory& factory) {
+  using ::coro::cloudstorage::util::AuthToken;
+  using ::coro::cloudstorage::util::AuthTokenManager;
+
+  auto token = std::get<AuthToken<CloudProvider>>(
+      AuthTokenManager()
+          .LoadTokenData<coro::util::TypeList<CloudProvider>>()
+          .front());
+  return factory.template Create<CloudProvider>(
+      token, [id = std::move(token.id)](const auto& new_token) {
+        AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
+      });
+}
+
+using CloudProviderT =
+    decltype(CreateCloudProvider<CloudProvider>(std::declval<CloudFactoryT>()));
+using FileSystemContext = FileSystemProvider<CloudProviderT>;
 using FileContext = FileSystemContext::ItemContextT;
 
 constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
@@ -728,19 +749,13 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
   }
   coro::util::EventLoop event_loop(event_base);
   coro::util::ThreadPool thread_pool(event_loop);
-  coro::http::CacheHttp<coro::http::CurlHttp> http{
-      coro::http::CurlHttp(event_base)};
+  HttpT http{coro::http::CurlHttp(event_base)};
   coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator(&thread_pool,
                                                                    &event_loop);
   coro::cloudstorage::util::Muxer muxer(&event_loop, &thread_pool);
   coro::cloudstorage::CloudFactory factory(event_loop, http,
                                            thumbnail_generator, muxer);
-  coro::cloudstorage::util::AuthTokenManager auth_token_manager;
-  auto provider = factory.Create<coro::cloudstorage::Mega>(
-      std::get<coro::cloudstorage::util::AuthToken<coro::cloudstorage::Mega>>(
-          auth_token_manager
-              .LoadTokenData<coro::util::TypeList<coro::cloudstorage::Mega>>()
-              .front()));
+  auto provider = CreateCloudProvider<CloudProvider>(factory);
   struct CallbackData {
     event fuse_event;
     event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])];
