@@ -68,17 +68,18 @@ class FileSystemProvider {
   using NewFileRead = typename ItemContextT::NewFileRead;
   using CurrentStreamingWriteT = typename ItemContextT::CurrentStreamingWriteT;
 
+  template <typename F>
+  static auto Convert(const F& d) {
+    if constexpr (IsDirectory<F, CloudProvider>) {
+      return Directory(d);
+    } else {
+      static_assert(IsFile<F, CloudProvider>);
+      return File(d);
+    }
+  }
+
   static auto Convert(const typename CloudProvider::Item& item) {
-    return std::visit(
-        []<typename F>(const F& d) -> Item {
-          if constexpr (IsDirectory<F, CloudProvider>) {
-            return Directory(d);
-          } else {
-            static_assert(IsFile<F, CloudProvider>);
-            return File(d);
-          }
-        },
-        item);
+    return std::visit([](const auto& d) -> Item { return Convert(d); }, item);
   }
 
   static auto Convert(const Item& item) {
@@ -238,7 +239,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
   CurrentRead& current_read = *context.current_read_;
   if (std::optional<std::string> chunk =
           co_await cache_file->Read(offset, static_cast<size_t>(size))) {
-    co_return* chunk;
+    co_return *chunk;
   }
   if (current_read.pending) {
     QueuedRead read{.offset = offset};
@@ -341,10 +342,14 @@ auto FileSystemProvider<CloudProvider>::Rename(const ItemContextT& item,
     -> Task<ItemContextT> {
   auto ditem = co_await std::visit(
       [&](const auto& d) -> Task<Item> {
-        co_return Convert(co_await provider_->RenameItem(
-            d, std::string(new_name), std::move(stop_token)));
+        co_return co_await std::visit(
+            [&](const auto& d) -> Task<Item> {
+              co_return co_await provider_->RenameItem(d, std::string(new_name),
+                                                       std::move(stop_token));
+            },
+            d);
       },
-      Convert(item.item_.value()));
+      item.item_.value());
   ItemContextT new_item{std::move(ditem), item.parent_};
   content_cache_.Invalidate(new_item.GetId());
   co_return new_item;
@@ -359,10 +364,14 @@ auto FileSystemProvider<CloudProvider>::Move(const ItemContextT& source,
       std::get<Directory>(destination.item_.value());
   auto ditem = co_await std::visit(
       [&](const auto& source, const auto& destination) -> Task<Item> {
-        co_return Convert(co_await provider_->MoveItem(source, destination,
-                                                       std::move(stop_token)));
+        co_return co_await std::visit(
+            [&](const auto& source) -> Task<Item> {
+              co_return co_await provider_->MoveItem(source, destination,
+                                                     std::move(stop_token));
+            },
+            source);
       },
-      Convert(source.item_.value()), destination_directory);
+      source.item_.value(), destination_directory);
   ItemContextT new_item{std::move(ditem), destination_directory};
   content_cache_.Invalidate(new_item.GetId());
   co_return new_item;

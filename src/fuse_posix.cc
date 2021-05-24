@@ -1,6 +1,7 @@
 #include "fuse_posix.h"
 
 #define FUSE_USE_VERSION 39
+#include <coro/cloudstorage/util/merged_cloud_provider.h>
 #include <coro/util/function_traits.h>
 #include <coro/util/raii_utils.h>
 #include <event2/thread.h>
@@ -12,6 +13,7 @@
 
 #include "filesystem_context.h"
 #include "filesystem_provider.h"
+#include "new_filesystem_context.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -19,29 +21,7 @@ namespace {
 
 using ::coro::util::AtScopeExit;
 
-using CloudProvider = GoogleDrive;
-using HttpT = http::CacheHttp<http::CurlHttp>;
-using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
-                                   util::ThumbnailGenerator, util::Muxer>;
-
-template <typename CloudProvider, typename Factory>
-auto CreateCloudProvider(const Factory& factory) {
-  using ::coro::cloudstorage::util::AuthToken;
-  using ::coro::cloudstorage::util::AuthTokenManager;
-
-  auto token = std::get<AuthToken<CloudProvider>>(
-      AuthTokenManager()
-          .LoadTokenData<coro::util::TypeList<CloudProvider>>()
-          .front());
-  return factory.template Create<CloudProvider>(
-      token, [id = std::move(token.id)](const auto& new_token) {
-        AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
-      });
-}
-
-using CloudProviderT =
-    decltype(CreateCloudProvider<CloudProvider>(std::declval<CloudFactoryT>()));
-using FileSystemContext = FileSystemProvider<CloudProviderT>;
+using FileSystemContext = NewFileSystemContext::FileSystemProviderT;
 using FileContext = FileSystemContext::ItemContextT;
 
 constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
@@ -93,7 +73,7 @@ struct FuseFileContext {
 struct FuseContext {
   std::unordered_map<fuse_ino_t, FuseFileContext> file_context;
   std::unordered_map<std::string, fuse_ino_t> inode;
-  FileSystemContext context;
+  FileSystemContext& context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
 };
@@ -716,15 +696,6 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     std::cerr << "Mountpoint not specified.\n";
     co_return -1;
   }
-  coro::util::EventLoop event_loop(event_base);
-  coro::util::ThreadPool thread_pool(event_loop);
-  HttpT http{coro::http::CurlHttp(event_base)};
-  coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator(&thread_pool,
-                                                                   &event_loop);
-  coro::cloudstorage::util::Muxer muxer(&event_loop, &thread_pool);
-  coro::cloudstorage::CloudFactory factory(event_loop, http,
-                                           thumbnail_generator, muxer);
-  auto provider = CreateCloudProvider<CloudProvider>(factory);
   struct CallbackData {
     event fuse_event;
     event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])];
@@ -753,9 +724,9 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
                                   .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};
   try {
-    FuseContext context{
-        .context = FileSystemProvider(&provider, &event_loop, &thread_pool),
-        .conn_opts = conn_opts.get()};
+    NewFileSystemContext fs_context(event_base);
+    FuseContext context{.context = fs_context.fs(),
+                        .conn_opts = conn_opts.get()};
     cb_data.context = &context;
     context.file_context.emplace(
         FUSE_ROOT_ID,
@@ -822,6 +793,7 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
       throw std::runtime_error("fuse_daemonize failed");
     }
     co_await cb_data.quit;
+    co_await fs_context.Quit();
     co_return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
