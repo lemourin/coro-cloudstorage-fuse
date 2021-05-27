@@ -1,6 +1,7 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 
+#include <coro/util/lru_cache.h>
 #include <coro/util/thread_pool.h>
 
 #include <memory>
