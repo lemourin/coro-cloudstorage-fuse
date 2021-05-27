@@ -21,6 +21,8 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/item_context.h
     src/new_filesystem_context.h
     src/new_filesystem_context.cc
+    src/context_stop_token.cc
+    src/context_stop_token.h
 )
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
