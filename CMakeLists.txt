@@ -17,8 +17,8 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/auth_data.h
     src/streaming_write.h
     src/item_context.h
-    src/new_filesystem_context.h
-    src/new_filesystem_context.cc
+    src/filesystem_context.h
+    src/filesystem_context.cc
     src/context_stop_token.cc
     src/context_stop_token.h
 )

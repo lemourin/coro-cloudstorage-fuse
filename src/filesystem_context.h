@@ -1,5 +1,5 @@
-#ifndef CORO_CLOUDSTORAGE_FUSE_NEW_FILESYSTEM_CONTEXT_H
-#define CORO_CLOUDSTORAGE_FUSE_NEW_FILESYSTEM_CONTEXT_H
+#ifndef CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H
+#define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H
 
 #include <coro/cloudstorage/cloud_factory.h>
 #include <coro/cloudstorage/providers/amazon_s3.h>
@@ -93,4 +93,4 @@ using CloudProviderT =
 
 }  // namespace coro::cloudstorage::fuse
 
-#endif  // CORO_CLOUDSTORAGE_FUSE_NEW_FILESYSTEM_CONTEXT_H
+#endif  // CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H

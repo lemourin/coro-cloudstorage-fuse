@@ -11,8 +11,8 @@
 #include <csignal>
 #include <iostream>
 
+#include "filesystem_context.h"
 #include "filesystem_provider.h"
-#include "new_filesystem_context.h"
 
 namespace coro::cloudstorage::fuse {
 
