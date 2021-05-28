@@ -1,6 +1,8 @@
 #include "fuse_posix.h"
 
 #define FUSE_USE_VERSION 39
+#include <coro/cloudstorage/fuse/filesystem_context.h>
+#include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/util/merged_cloud_provider.h>
 #include <coro/util/function_traits.h>
 #include <coro/util/raii_utils.h>
@@ -10,9 +12,6 @@
 
 #include <csignal>
 #include <iostream>
-
-#include "filesystem_context.h"
-#include "filesystem_provider.h"
 
 namespace coro::cloudstorage::fuse {
 

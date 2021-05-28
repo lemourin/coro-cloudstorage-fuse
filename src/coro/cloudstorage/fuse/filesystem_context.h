@@ -2,6 +2,7 @@
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H
 
 #include <coro/cloudstorage/cloud_factory.h>
+#include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/providers/amazon_s3.h>
 #include <coro/cloudstorage/providers/box.h>
 #include <coro/cloudstorage/providers/dropbox.h>
@@ -20,8 +21,6 @@
 #include <coro/http/curl_http.h>
 #include <coro/http/http_server.h>
 #include <coro/util/event_loop.h>
-
-#include "filesystem_provider.h"
 
 namespace coro::cloudstorage::fuse {
 

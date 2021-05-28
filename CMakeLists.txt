@@ -11,23 +11,24 @@ add_executable(coro-cloudstorage-fuse ${OPTIONS})
 
 target_sources(coro-cloudstorage-fuse PRIVATE
     src/main.cc
-    src/sparse_file.h
-    src/sparse_file.cc
-    src/auth_data.h
-    src/streaming_write.h
-    src/item_context.h
-    src/filesystem_context.h
-    src/filesystem_context.cc
+    src/coro/cloudstorage/fuse/sparse_file.h
+    src/coro/cloudstorage/fuse/sparse_file.cc
+    src/coro/cloudstorage/fuse/auth_data.h
+    src/coro/cloudstorage/fuse/streaming_write.h
+    src/coro/cloudstorage/fuse/item_context.h
+    src/coro/cloudstorage/fuse/filesystem_context.h
+    src/coro/cloudstorage/fuse/filesystem_context.cc
 )
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
+target_include_directories(coro-cloudstorage-fuse PRIVATE src)
 
 if(WIN32)
     configure_file(src/resources.rc.in resources.rc)
     target_sources(coro-cloudstorage-fuse PRIVATE
         resources.rc
-        src/fuse_winfsp.h
-        src/fuse_winfsp.cc)
+        src/coro/cloudstorage/fuse/fuse_winfsp.h
+        src/coro/cloudstorage/fuse/fuse_winfsp.cc)
 
     if("${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
         set(ARCH x86)
@@ -47,8 +48,8 @@ if(WIN32)
     endif()
 else()
     target_sources(coro-cloudstorage-fuse PRIVATE
-        src/fuse_posix.cc
-        src/fuse_posix.h)
+        src/coro/cloudstorage/fuse/fuse_posix.cc
+        src/coro/cloudstorage/fuse/fuse_posix.h)
 
     include(FindPkgConfig)
 

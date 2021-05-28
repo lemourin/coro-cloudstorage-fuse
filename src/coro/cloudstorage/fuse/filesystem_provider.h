@@ -1,15 +1,15 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 
+#include <coro/cloudstorage/fuse/item_context.h>
+#include <coro/cloudstorage/fuse/sparse_file.h>
+#include <coro/cloudstorage/fuse/streaming_write.h>
 #include <coro/util/lru_cache.h>
 #include <coro/util/thread_pool.h>
 
+#include <iostream>
 #include <memory>
 #include <optional>
-
-#include "item_context.h"
-#include "sparse_file.h"
-#include "streaming_write.h"
 
 namespace coro::cloudstorage::fuse {
 

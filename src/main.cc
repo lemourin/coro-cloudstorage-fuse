@@ -24,11 +24,10 @@ auto Create(T* d) {
 
 #ifdef WIN32
 
+#include <coro/cloudstorage/fuse/filesystem_context.h>
+#include <coro/cloudstorage/fuse/fuse_winfsp.h>
 #include <event2/event.h>
 #include <event2/thread.h>
-
-#include "filesystem_context.h"
-#include "fuse_winfsp.h"
 
 #define kAppId "cloudstorage-fuse"
 
@@ -304,7 +303,7 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
 }
 #else
 
-#include "fuse_posix.h"
+#include <coro/cloudstorage/fuse/fuse_posix.h>
 
 int main(int argc, char** argv) {
   signal(SIGPIPE, SIG_IGN);
