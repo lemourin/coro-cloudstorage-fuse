@@ -2,19 +2,18 @@
 
 namespace coro::cloudstorage::fuse {
 
-void NewFileSystemContext::ForwardToMergedCloudProvider::OnCreate(
+void FileSystemContext::ForwardToMergedCloudProvider::OnCreate(
     CloudProviderAccountT* account) {
   std::visit([&](auto& d) { provider->AddAccount(account->GetId(), &d); },
              account->provider);
 }
 
-void NewFileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
+void FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
     CloudProviderAccountT* account) {
   std::visit([&](auto& d) { provider->RemoveAccount(&d); }, account->provider);
 }
 
-NewFileSystemContext::NewFileSystemContext(event_base* event_base,
-                                           Config config)
+FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_loop_(event_base),
       thread_pool_(event_loop_),
       http_(http::CurlHttp(event_base)),

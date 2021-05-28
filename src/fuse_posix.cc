@@ -20,8 +20,8 @@ namespace {
 
 using ::coro::util::AtScopeExit;
 
-using FileSystemContext = NewFileSystemContext::FileSystemProviderT;
-using FileContext = FileSystemContext::ItemContextT;
+using FileSystemProvider = FileSystemContext::FileSystemProviderT;
+using FileContext = FileSystemProvider::ItemContextT;
 
 constexpr int kIndexWidth = sizeof(off_t) * CHAR_BIT / 2;
 constexpr int kMetadataTimeout = 10;
@@ -72,7 +72,7 @@ struct FuseFileContext {
 struct FuseContext {
   std::unordered_map<fuse_ino_t, FuseFileContext> file_context;
   std::unordered_map<std::string, fuse_ino_t> inode;
-  FileSystemContext& context;
+  FileSystemProvider& context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
 };
@@ -723,7 +723,7 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
                                   .create = CoroutineT<Create>,
                                   .readdirplus = CoroutineT<ReadDir>};
   try {
-    NewFileSystemContext fs_context(event_base);
+    FileSystemContext fs_context(event_base);
     FuseContext context{.context = fs_context.fs(),
                         .conn_opts = conn_opts.get()};
     cb_data.context = &context;
