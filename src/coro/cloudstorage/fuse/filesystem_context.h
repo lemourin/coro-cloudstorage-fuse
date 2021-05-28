@@ -24,14 +24,27 @@
 
 namespace coro::cloudstorage::fuse {
 
+template <typename CloudProvider, typename Factory>
+auto CreateCloudProvider(const Factory& factory) {
+  using ::coro::cloudstorage::util::AuthToken;
+  using ::coro::cloudstorage::util::AuthTokenManager;
+
+  auto token = std::get<AuthToken<CloudProvider>>(
+      AuthTokenManager()
+          .LoadTokenData<coro::util::TypeList<CloudProvider>>()
+          .front());
+  return factory.template Create<CloudProvider>(
+      token, [id = std::move(token.id)](const auto& new_token) {
+        AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
+      });
+}
+
+template <typename CloudProvider, typename Factory>
+using CloudProviderT =
+    decltype(CreateCloudProvider<CloudProvider>(std::declval<Factory>()));
+
 class FileSystemContext {
  private:
-  struct Config {
-    int timeout_ms;
-    std::optional<std::string> config_path;
-    FileSystemProviderConfig fs_config;
-  };
-
   struct ForwardToMergedCloudProvider;
 
   using CloudProviderTypeList =
@@ -55,8 +68,22 @@ class FileSystemContext {
     MergedCloudProviderT* provider;
   };
 
+  static inline constexpr bool kTestCloudProvider = false;
+  using TestCloudProviderT = GoogleDrive;
+
  public:
-  using CloudProviderT = util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider;
+  struct Config {
+    int timeout_ms;
+    std::optional<std::string> config_path;
+    FileSystemProviderConfig fs_config;
+  };
+
+  using CloudProviderT = std::conditional_t<
+      kTestCloudProvider,
+      coro::cloudstorage::fuse::CloudProviderT<TestCloudProviderT,
+                                               CloudFactoryT>,
+      util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider>;
+
   using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
@@ -81,25 +108,6 @@ class FileSystemContext {
   FileSystemProviderT fs_;
   coro::http::HttpServer<AccountManagerHandlerT> http_server_;
 };
-
-template <typename CloudProvider, typename Factory>
-auto CreateCloudProvider(const Factory& factory) {
-  using ::coro::cloudstorage::util::AuthToken;
-  using ::coro::cloudstorage::util::AuthTokenManager;
-
-  auto token = std::get<AuthToken<CloudProvider>>(
-      AuthTokenManager()
-          .LoadTokenData<coro::util::TypeList<CloudProvider>>()
-          .front());
-  return factory.template Create<CloudProvider>(
-      token, [id = std::move(token.id)](const auto& new_token) {
-        AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
-      });
-}
-
-template <typename CloudProvider, typename Factory>
-using CloudProviderT =
-    decltype(CreateCloudProvider<CloudProvider>(std::declval<Factory>()));
 
 }  // namespace coro::cloudstorage::fuse
 
