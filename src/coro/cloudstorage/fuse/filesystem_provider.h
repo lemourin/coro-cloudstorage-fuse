@@ -72,9 +72,12 @@ class FileSystemProvider {
  private:
   using QueuedRead = typename ItemContextT::QueuedRead;
   using CurrentRead = typename ItemContextT::CurrentRead;
-  using CurrentWrite = typename ItemContextT::CurrentWrite;
-  using NewFileRead = typename ItemContextT::NewFileRead;
-  using CurrentStreamingWriteT = typename ItemContextT::CurrentStreamingWriteT;
+  template <typename Context = ItemContextT>
+  using CurrentWrite = typename Context::CurrentWrite;
+  template <typename Context = ItemContextT>
+  using NewFileRead = typename Context::NewFileRead;
+  template <typename Context = ItemContextT>
+  using CurrentStreamingWriteT = typename Context::CurrentStreamingWriteT;
 
   template <typename F>
   static auto Convert(const F& d) {
@@ -248,7 +251,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
   CurrentRead& current_read = *context.current_read_;
   if (std::optional<std::string> chunk =
           co_await cache_file->Read(offset, static_cast<size_t>(size))) {
-    co_return *chunk;
+    co_return* chunk;
   }
   stdx::stop_callback cb(stop_token,
                          [&] { context.stop_source_.request_stop(); });
@@ -352,9 +355,13 @@ auto FileSystemProvider<CloudProvider>::Rename(const ItemContextT& item,
   auto ditem = co_await std::visit(
       [&](const auto& d) -> Task<Item> {
         co_return co_await std::visit(
-            [&](const auto& d) -> Task<Item> {
-              co_return co_await provider_->RenameItem(d, std::string(new_name),
-                                                       std::move(stop_token));
+            [&]<typename ItemT>(const ItemT& d) -> Task<Item> {
+              if constexpr (CanRename<ItemT, CloudProvider>) {
+                co_return co_await provider_->RenameItem(
+                    d, std::string(new_name), std::move(stop_token));
+              } else {
+                throw CloudException("rename not supported");
+              }
             },
             d);
       },
@@ -372,15 +379,21 @@ auto FileSystemProvider<CloudProvider>::Move(const ItemContextT& source,
   const auto& destination_directory =
       std::get<Directory>(destination.item_.value());
   auto ditem = co_await std::visit(
-      [&](const auto& source, const auto& destination) -> Task<Item> {
+      [&](const auto& source) -> Task<Item> {
         co_return co_await std::visit(
-            [&](const auto& source) -> Task<Item> {
-              co_return co_await provider_->MoveItem(source, destination,
-                                                     std::move(stop_token));
+            [&]<typename SourceT, typename DestinationT>(
+                const SourceT& source,
+                const DestinationT& destination) -> Task<Item> {
+              if constexpr (CanMove<SourceT, DestinationT, CloudProvider>) {
+                co_return co_await provider_->MoveItem(source, destination,
+                                                       std::move(stop_token));
+              } else {
+                throw CloudException("move not supported");
+              }
             },
-            source);
+            source, destination_directory);
       },
-      source.item_.value(), destination_directory);
+      source.item_.value());
   ItemContextT new_item{std::move(ditem), destination_directory};
   content_cache_.Invalidate(new_item.GetId());
   co_return new_item;
@@ -392,9 +405,13 @@ auto FileSystemProvider<CloudProvider>::CreateDirectory(
     stdx::stop_token stop_token) -> Task<ItemContextT> {
   const auto& parent_directory = std::get<Directory>(parent.item_.value());
   auto new_directory = co_await std::visit(
-      [&](const auto& d) -> Task<Item> {
-        co_return co_await provider_->CreateDirectory(d, std::string(name),
-                                                      std::move(stop_token));
+      [&]<typename DirectoryT>(const DirectoryT& d) -> Task<Item> {
+        if constexpr (CanCreateDirectory<DirectoryT, CloudProvider>) {
+          co_return co_await provider_->CreateDirectory(d, std::string(name),
+                                                        std::move(stop_token));
+        } else {
+          throw CloudException("create directory not supported");
+        }
       },
       parent_directory);
   co_return ItemContextT{std::move(new_directory), parent_directory};
@@ -405,8 +422,12 @@ auto FileSystemProvider<CloudProvider>::Remove(const ItemContextT& item,
                                                stdx::stop_token stop_token)
     -> Task<> {
   co_await std::visit(
-      [&](const auto& d) -> Task<> {
-        co_await provider_->RemoveItem(d, std::move(stop_token));
+      [&]<typename ItemT>(const ItemT& d) -> Task<> {
+        if constexpr (CanRemove<ItemT, CloudProvider>) {
+          co_await provider_->RemoveItem(d, std::move(stop_token));
+        } else {
+          throw CloudException("remove not supported");
+        }
       },
       Convert(item.item_.value()));
   content_cache_.Invalidate(item.GetId());
@@ -418,21 +439,26 @@ auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
                                                std::optional<int64_t> size,
                                                stdx::stop_token stop_token)
     -> Task<ItemContextT> {
-  if (config_.buffered_write ||
-      (CloudProvider::kIsFileContentSizeRequired && !size)) {
-    co_return co_await CreateBufferedUpload(parent, name,
-                                            std::move(stop_token));
+  if constexpr (ItemContextT::kWriteSupported) {
+    if (config_.buffered_write ||
+        (CloudProvider::kIsFileContentSizeRequired && !size)) {
+      co_return co_await CreateBufferedUpload(parent, name,
+                                              std::move(stop_token));
+    }
+    co_return std::visit(
+        [&]<typename Directory>(const Directory& parent) {
+          ItemContextT d(/*item=*/std::nullopt, parent);
+          d.current_streaming_write_ =
+              std::make_unique<CurrentStreamingWriteT<>>(
+                  std::in_place_type_t<
+                      CurrentStreamingWrite<CloudProvider, Directory>>{},
+                  thread_pool_, event_loop_, provider_, parent, size, name);
+          return d;
+        },
+        std::get<Directory>(parent.item_.value()));
+  } else {
+    throw CloudException("write not supported");
   }
-  co_return std::visit(
-      [&]<typename Directory>(const Directory& parent) {
-        ItemContextT d(/*item=*/std::nullopt, parent);
-        d.current_streaming_write_ = std::make_unique<CurrentStreamingWriteT>(
-            std::in_place_type_t<
-                CurrentStreamingWrite<CloudProvider, Directory>>{},
-            thread_pool_, event_loop_, provider_, parent, size, name);
-        return d;
-      },
-      std::get<Directory>(parent.item_.value()));
 }
 
 template <typename CloudProvider>
@@ -441,9 +467,9 @@ auto FileSystemProvider<CloudProvider>::CreateBufferedUpload(
     -> Task<ItemContextT> {
   ItemContextT result{/*item=*/std::nullopt,
                       std::get<Directory>(parent.item_.value())};
-  result.current_write_ = CurrentWrite{.tmpfile = util::CreateTmpFile(),
-                                       .new_name = std::string(name),
-                                       .mutex = std::make_unique<Mutex>()};
+  result.current_write_ = CurrentWrite<>{.tmpfile = util::CreateTmpFile(),
+                                         .new_name = std::string(name),
+                                         .mutex = std::make_unique<Mutex>()};
   co_return result;
 }
 
@@ -453,52 +479,60 @@ auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
                                               int64_t offset,
                                               stdx::stop_token stop_token)
     -> Task<> {
-  if (item.current_write_ && item.current_write_->tmpfile) {
-    co_return co_await WriteToBufferedUpload(item, chunk, offset,
-                                             std::move(stop_token));
-  }
-  if (!item.current_streaming_write_) {
-    if (!item.item_ || !item.parent_) {
-      throw CloudException("invalid item");
+  if constexpr (ItemContextT::kWriteSupported) {
+    if (item.current_write_ && item.current_write_->tmpfile) {
+      co_return co_await WriteToBufferedUpload(item, chunk, offset,
+                                               std::move(stop_token));
     }
-    if (item.GetSize() == 0) {
-      std::visit(
-          [&]<typename Directory>(const Directory& parent) {
-            item.current_streaming_write_ =
-                std::make_unique<CurrentStreamingWriteT>(
-                    std::in_place_type_t<
-                        CurrentStreamingWrite<CloudProvider, Directory>>{},
-                    thread_pool_, event_loop_, provider_, parent,
-                    /*size=*/std::nullopt, item.GetName());
-          },
-          item.parent_.value());
-    } else {
-      throw CloudException("streaming write missing");
+    if (!item.current_streaming_write_) {
+      if (!item.item_ || !item.parent_) {
+        throw CloudException("invalid item");
+      }
+      if (item.GetSize() == 0) {
+        std::visit(
+            [&]<typename Directory>(const Directory& parent) {
+              item.current_streaming_write_ =
+                  std::make_unique<CurrentStreamingWriteT<>>(
+                      std::in_place_type_t<
+                          CurrentStreamingWrite<CloudProvider, Directory>>{},
+                      thread_pool_, event_loop_, provider_, parent,
+                      /*size=*/std::nullopt, item.GetName());
+            },
+            item.parent_.value());
+      } else {
+        throw CloudException("streaming write missing");
+      }
     }
+    co_await std::visit(
+        [&](auto& write) -> Task<> {
+          co_await write.Write(chunk, offset, std::move(stop_token));
+        },
+        *item.current_streaming_write_);
+  } else {
+    throw CloudException("write not supported");
   }
-  co_await std::visit(
-      [&](auto& write) -> Task<> {
-        co_await write.Write(chunk, offset, std::move(stop_token));
-      },
-      *item.current_streaming_write_);
 }
 
 template <typename CloudProvider>
 auto FileSystemProvider<CloudProvider>::Flush(const ItemContextT& item,
                                               stdx::stop_token stop_token)
     -> Task<ItemContextT> {
-  if (item.current_write_ && item.current_write_->tmpfile) {
-    co_return co_await FlushBufferedUpload(item, std::move(stop_token));
+  if constexpr (ItemContextT::kWriteSupported) {
+    if (item.current_write_ && item.current_write_->tmpfile) {
+      co_return co_await FlushBufferedUpload(item, std::move(stop_token));
+    }
+    if (!item.current_streaming_write_) {
+      throw CloudException("streaming write missing");
+    }
+    co_return co_await std::visit(
+        [&](auto& write) -> Task<ItemContextT> {
+          auto new_item = co_await write.Flush(std::move(stop_token));
+          co_return ItemContextT{std::move(new_item), item.parent_};
+        },
+        *item.current_streaming_write_);
+  } else {
+    throw CloudException("write not supported");
   }
-  if (!item.current_streaming_write_) {
-    throw CloudException("streaming write missing");
-  }
-  co_return co_await std::visit(
-      [&](auto& write) -> Task<ItemContextT> {
-        auto new_item = co_await write.Flush(std::move(stop_token));
-        co_return ItemContextT{std::move(new_item), item.parent_};
-      },
-      *item.current_streaming_write_);
 }
 
 template <typename CloudProvider>
@@ -510,15 +544,15 @@ Task<> FileSystemProvider<CloudProvider>::WriteToBufferedUpload(
       throw CloudException("invalid item");
     }
     auto file = util::CreateTmpFile();
-    NewFileRead read{.provider = provider_,
-                     .thread_pool = thread_pool_,
-                     .item = std::get<File>(*context.item_),
-                     .file = file.get()};
+    NewFileRead<> read{.provider = provider_,
+                       .thread_pool = thread_pool_,
+                       .item = std::get<File>(*context.item_),
+                       .file = file.get()};
     context.current_write_ =
-        CurrentWrite{.tmpfile = std::move(file),
-                     .new_name = context.GetName(),
-                     .new_file_read = SharedPromise(std::move(read)),
-                     .mutex = std::make_unique<Mutex>()};
+        CurrentWrite<>{.tmpfile = std::move(file),
+                       .new_name = context.GetName(),
+                       .new_file_read = SharedPromise(std::move(read)),
+                       .mutex = std::make_unique<Mutex>()};
   }
   const auto& current_write = *context.current_write_;
   if (current_write.new_file_read) {

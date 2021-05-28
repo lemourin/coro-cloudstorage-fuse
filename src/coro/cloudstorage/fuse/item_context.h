@@ -6,23 +6,83 @@
 
 namespace coro::cloudstorage::fuse {
 
-template <typename CloudProvider>
-class ItemContext {
+namespace internal {
+
+template <typename T, typename CloudProvider>
+struct CanCreateT : std::bool_constant<CanCreateFile<T, CloudProvider>> {};
+
+template <typename...>
+class WriteItemContext;
+
+template <typename T>
+class WriteItemContext<T, coro::util::TypeList<>> {
  public:
-  template <typename T>
-  struct IsDirectoryT : std::bool_constant<IsDirectory<T, CloudProvider>> {};
+  static inline constexpr bool kWriteSupported = false;
+};
+
+template <typename T, typename CloudProvider>
+struct IsFileT : std::bool_constant<IsFile<T, CloudProvider>> {};
+
+template <typename CloudProvider>
+using ItemContextFile = coro::util::FromTypeListT<
+    std::variant,
+    coro::util::FilterT<IsFileT, typename CloudProvider::ItemTypeList,
+                        CloudProvider>>;
+
+template <typename T, typename CloudProvider>
+struct IsDirectoryT : std::bool_constant<IsDirectory<T, CloudProvider>> {};
+
+template <typename CloudProvider>
+using ItemContextDirectory = coro::util::FromTypeListT<
+    std::variant,
+    coro::util::FilterT<IsDirectoryT, typename CloudProvider::ItemTypeList,
+                        CloudProvider>>;
+
+template <typename CloudProvider, typename... Ts>
+class WriteItemContext<CloudProvider, coro::util::TypeList<Ts...>> {
+ public:
+  static inline constexpr bool kWriteSupported = true;
+
+ protected:
+  struct NewFileRead {
+    Task<> operator()();
+
+    CloudProvider* provider;
+    coro::util::ThreadPool* thread_pool;
+    ItemContextFile<CloudProvider> item;
+    std::FILE* file;
+    stdx::stop_token stop_token;
+  };
+
+  struct CurrentWrite {
+    std::unique_ptr<std::FILE, util::FileDeleter> tmpfile;
+    std::string new_name;
+    std::optional<SharedPromise<NewFileRead>> new_file_read;
+    std::unique_ptr<Mutex> mutex;
+  };
 
   template <typename T>
-  struct IsFileT : std::bool_constant<IsFile<T, CloudProvider>> {};
+  struct WriteT : std::type_identity<CurrentStreamingWrite<CloudProvider, T>> {
+  };
+  using CurrentStreamingWriteT = coro::util::FromTypeListT<
+      std::variant, coro::util::MapT<WriteT, coro::util::TypeList<Ts...>>>;
 
-  using File = typename coro::util::FromTypeListT<
-      std::variant,
-      coro::util::FilterT<IsFileT, typename CloudProvider::ItemTypeList>>;
+  mutable std::optional<CurrentWrite> current_write_;
+  mutable std::unique_ptr<CurrentStreamingWriteT> current_streaming_write_;
+};
 
-  using Directory = coro::util::FromTypeListT<
-      std::variant,
-      coro::util::FilterT<IsDirectoryT, typename CloudProvider::ItemTypeList>>;
+}  // namespace internal
 
+template <typename CloudProvider>
+class ItemContext
+    : public internal::WriteItemContext<
+          CloudProvider,
+          coro::util::FilterT<internal::CanCreateT,
+                              typename CloudProvider::ItemTypeList,
+                              CloudProvider>> {
+ public:
+  using File = internal::ItemContextFile<CloudProvider>;
+  using Directory = internal::ItemContextDirectory<CloudProvider>;
   using Item = std::variant<File, Directory>;
 
   enum class ItemType { kDirectory, kFile };
@@ -67,46 +127,17 @@ class ItemContext {
     std::vector<QueuedRead*> reads;
   };
 
-  struct NewFileRead {
-    Task<> operator()();
-
-    CloudProvider* provider;
-    coro::util::ThreadPool* thread_pool;
-    File item;
-    std::FILE* file;
-    stdx::stop_token stop_token;
-  };
-
-  struct CurrentWrite {
-    std::unique_ptr<std::FILE, util::FileDeleter> tmpfile;
-    std::string new_name;
-    std::optional<SharedPromise<NewFileRead>> new_file_read;
-    std::unique_ptr<Mutex> mutex;
-  };
-
-  template <typename T>
-  struct CanCreateT : std::bool_constant<CanCreateFile<T, CloudProvider>> {};
-
-  template <typename T>
-  struct WriteT : std::type_identity<CurrentStreamingWrite<CloudProvider, T>> {
-  };
-
-  using CurrentStreamingWriteT = coro::util::FromTypeListT<
-      std::variant,
-      coro::util::MapT<
-          WriteT, coro::util::FilterT<CanCreateT,
-                                      typename CloudProvider::ItemTypeList>>>;
-
   std::optional<Item> item_;
   std::optional<Directory> parent_;
   mutable std::optional<CurrentRead> current_read_;
-  mutable std::optional<CurrentWrite> current_write_;
-  mutable std::unique_ptr<CurrentStreamingWriteT> current_streaming_write_;
   mutable stdx::stop_source stop_source_;
 };
 
-template <typename CloudProvider>
-Task<> ItemContext<CloudProvider>::NewFileRead::operator()() {
+namespace internal {
+
+template <typename CloudProvider, typename... Ts>
+Task<> WriteItemContext<
+    CloudProvider, coro::util::TypeList<Ts...>>::NewFileRead::operator()() {
   auto generator = std::visit(
       [&](const auto& d) {
         return provider->GetFileContent(d, http::Range{},
@@ -120,6 +151,8 @@ Task<> ItemContext<CloudProvider>::NewFileRead::operator()() {
     }
   }
 }
+
+}  // namespace internal
 
 template <typename CloudProvider>
 auto ItemContext<CloudProvider>::GetId() const -> std::string {
