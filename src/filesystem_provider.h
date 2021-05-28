@@ -13,6 +13,11 @@
 
 namespace coro::cloudstorage::fuse {
 
+struct FileSystemProviderConfig {
+  bool buffered_write = false;
+  int cache_size = 16;
+};
+
 template <typename CloudProvider>
 class FileSystemProvider {
  public:
@@ -22,12 +27,14 @@ class FileSystemProvider {
   using Directory = typename ItemContextT::Directory;
 
   FileSystemProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
-                     coro::util::ThreadPool* thread_pool)
+                     coro::util::ThreadPool* thread_pool,
+                     FileSystemProviderConfig config)
       : provider_(provider),
         event_loop_(event_loop),
         thread_pool_(thread_pool),
-        content_cache_(/*cache_size=*/16,
-                       SparseFileFactory{.thread_pool = thread_pool}) {}
+        content_cache_(config.cache_size,
+                       SparseFileFactory{.thread_pool = thread_pool}),
+        config_(config) {}
 
   struct PageData {
     std::vector<ItemContextT> items;
@@ -149,6 +156,7 @@ class FileSystemProvider {
   mutable std::chrono::system_clock::duration download_speed_sum_ =
       std::chrono::seconds(0);
   mutable int64_t download_size_ = 0;
+  FileSystemProviderConfig config_;
 };
 
 template <typename CloudProvider>
@@ -410,7 +418,8 @@ auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
                                                std::optional<int64_t> size,
                                                stdx::stop_token stop_token)
     -> Task<ItemContextT> {
-  if (CloudProvider::kIsFileContentSizeRequired && !size) {
+  if (config_.buffered_write ||
+      (CloudProvider::kIsFileContentSizeRequired && !size)) {
     co_return co_await CreateBufferedUpload(parent, name,
                                             std::move(stop_token));
   }

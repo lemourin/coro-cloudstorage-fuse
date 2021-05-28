@@ -26,6 +26,11 @@ namespace coro::cloudstorage::fuse {
 
 class NewFileSystemContext {
  private:
+  struct Config {
+    std::optional<std::string> config_path;
+    FileSystemProviderConfig fs_config;
+  };
+
   struct ForwardToMergedCloudProvider;
 
   using CloudProviderTypeList =
@@ -53,7 +58,7 @@ class NewFileSystemContext {
   using CloudProviderT = MergedCloudProviderT;
   using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
 
-  explicit NewFileSystemContext(event_base*);
+  explicit NewFileSystemContext(event_base*, Config = {});
 
   const FileSystemProviderT& fs() const { return fs_; }
   FileSystemProviderT& fs() { return fs_; }
