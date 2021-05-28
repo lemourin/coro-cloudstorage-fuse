@@ -20,6 +20,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       thumbnail_generator_(&thread_pool_, &event_loop_),
       muxer_(&event_loop_, &thread_pool_),
       factory_(event_loop_, http_, thumbnail_generator_, muxer_),
+      provider_(&event_loop_, config.timeout_ms),
       fs_(&provider_, &event_loop_, &thread_pool_, config.fs_config),
       http_server_(
           event_base,

@@ -15,6 +15,7 @@
 #include <coro/cloudstorage/util/merged_cloud_provider.h>
 #include <coro/cloudstorage/util/muxer.h>
 #include <coro/cloudstorage/util/thumbnail_generator.h>
+#include <coro/cloudstorage/util/timing_out_cloud_provider.h>
 #include <coro/http/cache_http.h>
 #include <coro/http/curl_http.h>
 #include <coro/http/http_server.h>
@@ -27,6 +28,7 @@ namespace coro::cloudstorage::fuse {
 class FileSystemContext {
  private:
   struct Config {
+    int timeout_ms;
     std::optional<std::string> config_path;
     FileSystemProviderConfig fs_config;
   };
@@ -55,10 +57,10 @@ class FileSystemContext {
   };
 
  public:
-  using CloudProviderT = MergedCloudProviderT;
+  using CloudProviderT = util::TimingOutCloudProvider<MergedCloudProviderT>;
   using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
 
-  explicit FileSystemContext(event_base*, Config = {});
+  explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
 
   const FileSystemProviderT& fs() const { return fs_; }
   FileSystemProviderT& fs() { return fs_; }
@@ -72,7 +74,7 @@ class FileSystemContext {
   coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
   coro::cloudstorage::util::Muxer muxer_;
   CloudFactoryT factory_;
-  MergedCloudProviderT provider_;
+  CloudProviderT provider_;
   FileSystemProviderT fs_;
   coro::http::HttpServer<AccountManagerHandlerT> http_server_;
 };
