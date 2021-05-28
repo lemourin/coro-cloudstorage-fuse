@@ -31,6 +31,13 @@ class ItemContext {
   ItemContext(std::optional<Item> item, std::optional<Directory> parent)
       : item_(std::move(item)), parent_(std::move(parent)) {}
 
+  ~ItemContext() { stop_source_.request_stop(); }
+
+  ItemContext(const ItemContext&) = delete;
+  ItemContext(ItemContext&&) = default;
+  ItemContext& operator=(const ItemContext&) = delete;
+  ItemContext& operator=(ItemContext&&) = default;
+
   static ItemContext From(const ItemContext& item) {
     return ItemContext(item.item_, item.parent_);
   }

@@ -18,6 +18,13 @@ class CurrentStreamingWrite {
   CurrentStreamingWrite(coro::util::ThreadPool*, coro::util::EventLoop*,
                         CloudProvider* provider, Directory parent,
                         std::optional<int64_t> size, std::string_view name);
+  ~CurrentStreamingWrite() { stop_source_.request_stop(); }
+
+  CurrentStreamingWrite(const CurrentStreamingWrite&) = delete;
+  CurrentStreamingWrite(CurrentStreamingWrite&&) = delete;
+
+  CurrentStreamingWrite& operator=(const CurrentStreamingWrite&) = delete;
+  CurrentStreamingWrite& operator=(CurrentStreamingWrite&&) = delete;
 
   Task<> Write(std::string_view chunk, int64_t offset, stdx::stop_token);
   Task<File> Flush(stdx::stop_token);
