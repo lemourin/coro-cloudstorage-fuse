@@ -64,6 +64,10 @@ class FileSystemContext {
   const FileSystemProviderT& fs() const { return fs_; }
   FileSystemProviderT& fs() { return fs_; }
 
+  template <typename F>
+  void RunOnEventLoop(F f) {
+    event_loop_.RunOnEventLoop(std::move(f));
+  }
   Task<> Quit() { return http_server_.Quit(); }
 
  private:

@@ -35,7 +35,7 @@ constexpr int kIconResourceId = 1;
 constexpr UINT kIconMessageId = WM_APP + 1;
 
 using ::coro::Task;
-using ::coro::cloudstorage::FileSystemContext;
+using ::coro::cloudstorage::fuse::FileSystemContext;
 
 struct DebugStream : std::streambuf {
   int_type overflow(int_type c) override {
@@ -83,7 +83,8 @@ LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           if (data->service) {
             FspServiceStop(data->service);
           } else {
-            data->context->RunOnEventLoop([&] { data->context->Quit(); });
+            data->context->RunOnEventLoop(
+                [&]() -> Task<> { co_await data->context->Quit(); });
           }
           PostQuitMessage(EXIT_SUCCESS);
         }
@@ -211,7 +212,8 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   window_data.initialized.get_future().get();
   auto quit_service = AtScopeExit([&] {
     if (window_data.context) {
-      window_data.context->RunOnEventLoop([&] { window_data.context->Quit(); });
+      window_data.context->RunOnEventLoop(
+          [&]() -> Task<> { co_await window_data.context->Quit(); });
     }
   });
 

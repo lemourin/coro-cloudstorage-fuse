@@ -20,9 +20,8 @@ using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::util::AtScopeExit;
 
-using FileSystemContext =
-    FileSystemProvider<coro::cloudstorage::Mega::CloudProvider>;
-using FileContext = FileSystemContext::ItemContextT;
+using FileSystemProviderT = FileSystemContext::FileSystemProviderT;
+using FileContext = FileSystemProviderT::ItemContextT;
 
 NTSTATUS ToStatus(const CloudException& e) {
   switch (e.type()) {
@@ -87,8 +86,6 @@ std::wstring ToWindowsPath(const char* path) {
 
 class WinFspContext {
  public:
-  using FileContext = FileSystemContext::ItemContextT;
-
   struct FuseFileContext {
     FileContext context;
     std::string path;
@@ -130,23 +127,7 @@ class WinFspContext {
  private:
   void Main() {
     try {
-      coro::util::ThreadPool thread_pool(event_loop_);
-      coro::http::CacheHttp<coro::http::CurlHttp> http{
-          coro::http::CurlHttp(event_base_.get())};
-      coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator(
-          &thread_pool, &event_loop_);
-      coro::cloudstorage::util::Muxer muxer(&event_loop_, &thread_pool);
-      coro::cloudstorage::CloudFactory factory(event_loop_, http,
-                                               thumbnail_generator, muxer);
-      coro::cloudstorage::util::AuthTokenManager auth_token_manager;
-      auto provider = factory.Create<coro::cloudstorage::Mega>(
-          std::get<
-              coro::cloudstorage::util::AuthToken<coro::cloudstorage::Mega>>(
-              auth_token_manager
-                  .LoadTokenData<
-                      coro::util::TypeList<coro::cloudstorage::Mega>>()
-                  .front()));
-      FileSystemProvider context(&provider, &event_loop_, &thread_pool);
+      FileSystemContext context(event_base_.get());
       context_ = &context;
       initialized_.set_value();
       if (event_base_loop(event_base_.get(), EVLOOP_NO_EXIT_ON_EMPTY) == -1) {
@@ -223,7 +204,7 @@ class WinFspContext {
                        UINT32 create_options, UINT32 granted_access,
                        PVOID* file_context, FSP_FSCTL_FILE_INFO* file_info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         FileContext data = co_await context->GetItemContext(
@@ -247,7 +228,7 @@ class WinFspContext {
   static NTSTATUS GetVolumeInfo(FSP_FILE_SYSTEM* fs,
                                 FSP_FSCTL_VOLUME_INFO* volume_info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         auto data = co_await context->GetVolumeData(stdx::stop_token());
@@ -272,7 +253,7 @@ class WinFspContext {
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     d->RunOnEventLoop(
         [context, file_context = reinterpret_cast<FuseFileContext*>(
                       file_context)]() -> Task<> {
@@ -288,7 +269,7 @@ class WinFspContext {
                                 PWSTR pattern, PWSTR marker_str, PVOID buffer,
                                 ULONG buffer_length, PULONG bytes_transferred) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     auto* file_context = reinterpret_cast<FuseFileContext*>(file_context_ptr);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     auto marker = marker_str ? std::make_optional<std::wstring>(marker_str)
@@ -398,7 +379,7 @@ class WinFspContext {
                          UINT64 allocation_size, PVOID* file_context,
                          FSP_FSCTL_FILE_INFO* file_info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(ToUnixPath(filename));
@@ -462,7 +443,7 @@ class WinFspContext {
                             UINT64 allocation_size,
                             FSP_FSCTL_FILE_INFO* file_info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     auto* file = static_cast<FuseFileContext*>(file_context);
     return d->Do([&]() -> Task<NTSTATUS> {
       try {
@@ -487,7 +468,7 @@ class WinFspContext {
   static NTSTATUS Read(FSP_FILE_SYSTEM* fs, PVOID file_context, PVOID buffer,
                        UINT64 offset, ULONG length, PULONG bytes_transferred) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     auto* file = static_cast<FuseFileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     if (static_cast<int64_t>(offset) >= file->context.GetSize().value_or(0)) {
@@ -526,7 +507,7 @@ class WinFspContext {
                         BOOLEAN write_to_end_of_file, BOOLEAN constrained_io,
                         PULONG bytes_transferred, FSP_FSCTL_FILE_INFO* info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     auto file = static_cast<FuseFileContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     d->RunOnEventLoop([=]() mutable -> Task<> {
@@ -610,7 +591,7 @@ class WinFspContext {
   static VOID Cleanup(FSP_FILE_SYSTEM* fs, PVOID file_context, PWSTR file_name,
                       ULONG flags) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     auto* file = static_cast<FuseFileContext*>(file_context);
     if (!file) {
       return;
@@ -656,7 +637,7 @@ class WinFspContext {
                          PWSTR file_name, PWSTR new_file_name,
                          BOOLEAN replace_if_exists) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = d->context_;
+    auto* context = &d->context_->fs();
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         const auto& [source_directory_name, source_file_name] =
