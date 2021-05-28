@@ -102,7 +102,7 @@ class ItemContext {
   mutable std::optional<CurrentRead> current_read_;
   mutable std::optional<CurrentWrite> current_write_;
   mutable std::unique_ptr<CurrentStreamingWriteT> current_streaming_write_;
-  stdx::stop_source stop_source_;
+  mutable stdx::stop_source stop_source_;
 };
 
 template <typename CloudProvider>

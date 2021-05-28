@@ -250,6 +250,8 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
           co_await cache_file->Read(offset, static_cast<size_t>(size))) {
     co_return *chunk;
   }
+  stdx::stop_callback cb(stop_token,
+                         [&] { context.stop_source_.request_stop(); });
   if (current_read.pending) {
     QueuedRead read{.offset = offset};
     current_read.reads.emplace_back(&read);
@@ -257,7 +259,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
       current_read.reads.erase(std::find(current_read.reads.begin(),
                                          current_read.reads.end(), &read));
     });
-    co_await InterruptibleAwait(read.semaphore, stop_token);
+    co_await read.semaphore;
   }
   current_read.pending = true;
   auto guard = AtScopeExit([&] {
@@ -278,8 +280,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
         },
         std::get<File>(context.item_.value()));
     auto time = std::chrono::system_clock::now();
-    current_read.it =
-        co_await InterruptibleAwait(current_read.generator.begin(), stop_token);
+    current_read.it = co_await current_read.generator.begin();
     RegisterTimeToFirstByte(std::chrono::system_clock::now() - time);
     current_read.current_offset = offset;
     current_read.chunk.clear();
@@ -322,8 +323,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
     co_await append(std::move(**current_read.it));
     std::optional<std::exception_ptr> exception;
     try {
-      auto task = ++*current_read.it;
-      co_await InterruptibleAwait(std::move(task), stop_token);
+      co_await ++*current_read.it;
     } catch (const InterruptedException&) {
       throw;
     } catch (...) {

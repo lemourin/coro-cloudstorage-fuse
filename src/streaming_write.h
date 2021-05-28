@@ -18,7 +18,7 @@ class CurrentStreamingWrite {
   CurrentStreamingWrite(coro::util::ThreadPool*, coro::util::EventLoop*,
                         CloudProvider* provider, Directory parent,
                         std::optional<int64_t> size, std::string_view name);
-  ~CurrentStreamingWrite() { stop_source_.request_stop(); }
+  ~CurrentStreamingWrite();
 
   CurrentStreamingWrite(const CurrentStreamingWrite&) = delete;
   CurrentStreamingWrite(CurrentStreamingWrite&&) = delete;
@@ -30,6 +30,7 @@ class CurrentStreamingWrite {
   Task<File> Flush(stdx::stop_token);
 
  private:
+  void Interrupt();
   Generator<std::string> GetStream();
   Task<File> CreateFile();
 
@@ -71,6 +72,11 @@ CurrentStreamingWrite<CloudProvider, Directory>::CurrentStreamingWrite(
 }
 
 template <typename CloudProvider, typename Directory>
+CurrentStreamingWrite<CloudProvider, Directory>::~CurrentStreamingWrite() {
+  Interrupt();
+}
+
+template <typename CloudProvider, typename Directory>
 auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
     std::string_view chunk, int64_t offset, stdx::stop_token stop_token)
     -> Task<> {
@@ -92,7 +98,8 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
   }
   current_offset_ += chunk.size();
   current_chunk_.SetValue(std::string(chunk));
-  co_await InterruptibleAwait(done_, stop_token);
+  stdx::stop_callback cb(stop_token, [&] { Interrupt(); });
+  co_await done_;
   done_ = Promise<void>();
   while (true) {
     auto it = std::find_if(ranges_.begin(), ranges_.end(), [&](const auto& d) {
@@ -104,7 +111,7 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
     current_chunk_.SetValue(co_await util::ReadFile(thread_pool_, buffer_.get(),
                                                     it->offset, it->size));
     current_offset_ += it->size;
-    co_await InterruptibleAwait(done_, stop_token);
+    co_await done_;
     done_ = Promise<void>();
   };
 }
@@ -117,7 +124,8 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Flush(
   }
   flushed_ = true;
   current_chunk_.SetValue(std::string());
-  co_return co_await InterruptibleAwait(item_promise_, std::move(stop_token));
+  stdx::stop_callback cb(stop_token, [&] { Interrupt(); });
+  co_return co_await item_promise_;
 }
 
 template <typename CloudProvider, typename Directory>
@@ -144,8 +152,7 @@ template <typename CloudProvider, typename Directory>
 auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
     -> Generator<std::string> {
   while (!flushed_) {
-    std::string chunk =
-        co_await InterruptibleAwait(current_chunk_, stop_source_.get_token());
+    std::string chunk = co_await current_chunk_;
     current_chunk_ = Promise<std::string>();
     done_.SetValue();
     co_yield std::move(chunk);
@@ -153,6 +160,12 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
   if (CloudProvider::kIsFileContentSizeRequired && size_ != current_offset_) {
     throw CloudException("incomplete file");
   }
+}
+
+template <typename CloudProvider, typename Directory>
+void CurrentStreamingWrite<CloudProvider, Directory>::Interrupt() {
+  stop_source_.request_stop();
+  current_chunk_.SetException(InterruptedException());
 }
 
 }  // namespace coro::cloudstorage
