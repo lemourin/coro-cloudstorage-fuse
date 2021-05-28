@@ -56,7 +56,7 @@ class FileSystemContext {
   };
 
  public:
-  using CloudProviderT = util::TimingOutCloudProvider<MergedCloudProviderT>;
+  using CloudProviderT = util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider;
   using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
