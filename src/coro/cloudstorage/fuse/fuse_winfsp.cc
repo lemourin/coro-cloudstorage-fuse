@@ -117,7 +117,6 @@ class WinFspContext {
         }()) {}
 
   ~WinFspContext() {
-    // context_->RunOnEventLoop([this] { context_->Cancel(); });
     dispatcher_.reset();
     Check(event_base_loopexit(event_base_.get(), nullptr));
     event_loop_thread_.get();
