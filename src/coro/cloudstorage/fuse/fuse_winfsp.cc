@@ -146,9 +146,9 @@ class WinFspContext {
     return event_loop_.RunOnEventLoop(std::move(func));
   }
 
-  template <typename F>
-  auto Do(F func) {
-    using ResultType = typename decltype(func())::type;
+  template <typename F,
+            typename ResultType = typename decltype(std::declval<F>()())::type>
+  ResultType Do(F func) {
     std::promise<ResultType> result;
     RunOnEventLoop([&result, &func]() -> Task<> {
       try {
