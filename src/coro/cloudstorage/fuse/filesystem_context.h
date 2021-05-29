@@ -95,6 +95,7 @@ class FileSystemContext {
   void RunOnEventLoop(F f) {
     event_loop_.RunOnEventLoop(std::move(f));
   }
+
   Task<> Quit() { return http_server_.Quit(); }
 
  private:

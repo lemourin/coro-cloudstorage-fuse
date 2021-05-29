@@ -86,23 +86,14 @@ std::wstring ToWindowsPath(const char* path) {
 
 class WinFspContext {
  public:
-  struct FuseFileContext {
-    FileContext context;
-    std::string path;
-    std::optional<uint64_t> size;
-    bool written_to = false;
-    void* directory_buffer = nullptr;
-  };
-
-  WinFspContext(PWSTR mountpoint)
-      : event_base_([] {
-          evthread_use_windows_threads();
-          return event_base_new();
-        }()),
-        event_loop_(event_base_.get()),
-        event_loop_thread_(std::async(std::launch::async, [&] { Main(); })),
-        filesystem_([this] {
-          initialized_.get_future().get();
+  WinFspContext(event_base* event_base, PWSTR mountpoint)
+      : event_loop_(event_base),
+        context_(this),
+        filesystem_([&] {
+          Do([&]() -> Task<NTSTATUS> {
+            context_.emplace(event_base);
+            co_return STATUS_SUCCESS;
+          });
           FSP_FILE_SYSTEM* filesystem;
           Check(FspFileSystemCreate(
               const_cast<PWSTR>(L"" FSP_FSCTL_NET_DEVICE_NAME), &volume_params_,
@@ -110,33 +101,33 @@ class WinFspContext {
           filesystem->UserContext = this;
           return filesystem;
         }()),
-        dispatcher_([this, mountpoint] {
+        dispatcher_([&] {
           Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
           return filesystem_.get();
         }()) {}
 
+  WinFspContext(const WinFspContext&) = delete;
+  WinFspContext(WinFspContext&&) = delete;
+  WinFspContext& operator=(const WinFspContext&) = delete;
+  WinFspContext& operator=(WinFspContext&&) = delete;
+
   ~WinFspContext() {
-    dispatcher_.reset();
-    Check(event_base_loopexit(event_base_.get(), nullptr));
-    event_loop_thread_.get();
-    filesystem_.reset();
+    Do([&]() -> Task<NTSTATUS> {
+      stop_source_.request_stop();
+      co_await context_->Quit();
+      co_return STATUS_SUCCESS;
+    });
   }
 
  private:
-  void Main() {
-    try {
-      FileSystemContext context(event_base_.get());
-      context_ = &context;
-      initialized_.set_value();
-      if (event_base_loop(event_base_.get(), EVLOOP_NO_EXIT_ON_EMPTY) == -1) {
-        throw std::runtime_error("event_base_dispatch error");
-      }
-    } catch (...) {
-      initialized_.set_exception(std::current_exception());
-    }
-    context_ = nullptr;
-  }
+  struct FuseFileContext {
+    FileContext context;
+    std::string path;
+    std::optional<uint64_t> size;
+    bool written_to = false;
+    void* directory_buffer = nullptr;
+  };
 
   struct FileSystemDeleter {
     void operator()(FSP_FILE_SYSTEM* filesystem) const {
@@ -207,7 +198,7 @@ class WinFspContext {
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         FileContext data = co_await context->GetItemContext(
-            ToUnixPath(filename), stdx::stop_token());
+            ToUnixPath(filename), d->stop_source_.get_token());
         ToFileInfo(data, file_info);
         std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
             .context = std::move(data), .path = ToUnixPath(filename)});
@@ -230,7 +221,8 @@ class WinFspContext {
     auto* context = &d->context_->fs();
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
-        auto data = co_await context->GetVolumeData(stdx::stop_token());
+        auto data =
+            co_await context->GetVolumeData(d->stop_source_.get_token());
         volume_info->FreeSize = (data.space_total && data.space_used)
                                     ? *data.space_total - *data.space_used
                                     : UINT64_MAX;
@@ -252,16 +244,14 @@ class WinFspContext {
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    auto* context = &d->context_->fs();
-    d->RunOnEventLoop(
-        [context, file_context = reinterpret_cast<FuseFileContext*>(
-                      file_context)]() -> Task<> {
-          if (file_context) {
-            FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
-            delete file_context;
-          }
-          co_return;
-        });
+    d->RunOnEventLoop([d, file_context = reinterpret_cast<FuseFileContext*>(
+                              file_context)]() -> Task<> {
+      if (file_context) {
+        FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
+        delete file_context;
+      }
+      co_return;
+    });
   }
 
   static NTSTATUS ReadDirectory(FSP_FILE_SYSTEM* fs, PVOID file_context_ptr,
@@ -293,20 +283,20 @@ class WinFspContext {
             union {
               UINT8 data[FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
                          MAX_PATH * sizeof(WCHAR)];
-              FSP_FSCTL_DIR_INFO d;
+              FSP_FSCTL_DIR_INFO fsctl_dir_info;
             } entry_buffer;
-            FSP_FSCTL_DIR_INFO* entry = &entry_buffer.d;
+            FSP_FSCTL_DIR_INFO* entry = &entry_buffer.fsctl_dir_info;
             std::vector<FileContext> data;
             FOR_CO_AWAIT(std::vector<FileContext> & page_data,
                          context->ReadDirectory(file_context->context,
-                                                stdx::stop_token())) {
+                                                d->stop_source_.get_token())) {
               for (auto& item : page_data) {
                 data.emplace_back(std::move(item));
               }
             }
             auto [directory_name, file_name] = SplitPath(file_context->path);
             FileContext parent = co_await context->GetItemContext(
-                directory_name, stdx::stop_token());
+                directory_name, d->stop_source_.get_token());
             NTSTATUS result = STATUS_SUCCESS;
             memcpy(entry->FileNameBuf, L".", sizeof(wchar_t));
             memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
@@ -383,13 +373,14 @@ class WinFspContext {
       try {
         auto [directory_name, file_name] = SplitPath(ToUnixPath(filename));
         FileContext parent = co_await context->GetItemContext(
-            directory_name, stdx::stop_token());
+            directory_name, d->stop_source_.get_token());
 
         try {
           std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.context = co_await context->GetItemContext(
-                                      ToUnixPath(filename), stdx::stop_token()),
-                                  .path = ToUnixPath(filename)});
+              new FuseFileContext{
+                  .context = co_await context->GetItemContext(
+                      ToUnixPath(filename), d->stop_source_.get_token()),
+                  .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_OBJECT_NAME_EXISTS;
         } catch (const CloudException&) {
@@ -397,7 +388,7 @@ class WinFspContext {
 
         if (create_options & FILE_DIRECTORY_FILE) {
           FileContext new_item(co_await context->CreateDirectory(
-              parent, file_name, stdx::stop_token()));
+              parent, file_name, d->stop_source_.get_token()));
           ToFileInfo(new_item, file_info);
           std::unique_ptr<FuseFileContext> fuse_file_context(
               new FuseFileContext{.context = std::move(new_item),
@@ -405,10 +396,11 @@ class WinFspContext {
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
         } else {
-          auto new_item = co_await context->Create(
-              std::move(parent), file_name, /*size=*/0, stdx::stop_token());
-          new_item =
-              co_await context->Flush(std::move(new_item), stdx::stop_token());
+          auto new_item =
+              co_await context->Create(std::move(parent), file_name, /*size=*/0,
+                                       d->stop_source_.get_token());
+          new_item = co_await context->Flush(std::move(new_item),
+                                             d->stop_source_.get_token());
           ToFileInfo(new_item, file_info);
           std::unique_ptr<FuseFileContext> fuse_file_context(
               new FuseFileContext{.context = std::move(new_item),
@@ -447,12 +439,13 @@ class WinFspContext {
     return d->Do([&]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(file->path);
-        auto parent = co_await context->GetItemContext(directory_name,
-                                                       stdx::stop_token());
-        auto new_item = co_await context->Create(
-            std::move(parent), file_name, /*size=*/0, stdx::stop_token());
-        file->context =
-            co_await context->Flush(std::move(new_item), stdx::stop_token());
+        auto parent = co_await context->GetItemContext(
+            directory_name, d->stop_source_.get_token());
+        auto new_item =
+            co_await context->Create(std::move(parent), file_name, /*size=*/0,
+                                     d->stop_source_.get_token());
+        file->context = co_await context->Flush(std::move(new_item),
+                                                d->stop_source_.get_token());
         co_return STATUS_SUCCESS;
       } catch (const CloudException& e) {
         std::cerr << "ERROR " << e.what() << "\n";
@@ -483,7 +476,7 @@ class WinFspContext {
       try {
         std::string content = co_await context->Read(
             file->context, static_cast<int64_t>(offset),
-            static_cast<int64_t>(length), stdx::stop_token());
+            static_cast<int64_t>(length), d->stop_source_.get_token());
         memcpy(buffer, content.c_str(), content.size());
         response.IoStatus.Status = STATUS_SUCCESS;
         response.IoStatus.Information = static_cast<uint32_t>(content.size());
@@ -520,9 +513,9 @@ class WinFspContext {
         if (!file->written_to) {
           auto [directory_name, file_name] = SplitPath(file->path);
           FileContext parent = co_await context->GetItemContext(
-              directory_name, stdx::stop_token());
+              directory_name, d->stop_source_.get_token());
           file->context = co_await context->Create(
-              parent, file_name, file->size, stdx::stop_token());
+              parent, file_name, file->size, d->stop_source_.get_token());
         }
 
         if (!file->size) {
@@ -552,7 +545,7 @@ class WinFspContext {
         co_await context->Write(
             file->context,
             std::string_view(reinterpret_cast<const char*>(buffer), length),
-            offset, stdx::stop_token());
+            offset, d->stop_source_.get_token());
         file->written_to = true;
 
         ToFileInfo(file->context, &response.Rsp.Write.FileInfo);
@@ -598,7 +591,7 @@ class WinFspContext {
     if (flags & FspCleanupDelete) {
       d->Do([=]() -> Task<NTSTATUS> {
         try {
-          co_await context->Remove(file->context, stdx::stop_token());
+          co_await context->Remove(file->context, d->stop_source_.get_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
           std::cerr << "ERROR " << e.what() << "\n";
@@ -613,11 +606,11 @@ class WinFspContext {
           if (!file->written_to) {
             auto [directory_name, file_name] = SplitPath(file->path);
             FileContext parent = co_await context->GetItemContext(
-                directory_name, stdx::stop_token());
+                directory_name, d->stop_source_.get_token());
             file->context = co_await context->Create(
-                parent, file_name, file->size, stdx::stop_token());
+                parent, file_name, file->size, d->stop_source_.get_token());
           }
-          co_await context->Flush(file->context, stdx::stop_token());
+          co_await context->Flush(file->context, d->stop_source_.get_token());
           co_return STATUS_SUCCESS;
         } catch (const std::exception& e) {
           std::cerr << "ERROR " << e.what() << "\n";
@@ -647,14 +640,15 @@ class WinFspContext {
         auto source_item = reinterpret_cast<FuseFileContext*>(file_context);
         FileContext new_item = FileContext::From(source_item->context);
         if (source_file_name != destination_file_name) {
-          new_item = co_await context->Rename(
-              source_item->context, destination_file_name, stdx::stop_token());
+          new_item = co_await context->Rename(source_item->context,
+                                              destination_file_name,
+                                              d->stop_source_.get_token());
         }
         if (source_directory_name != destination_directory_name) {
           auto destination = co_await context->GetItemContext(
-              destination_directory_name, stdx::stop_token());
+              destination_directory_name, d->stop_source_.get_token());
           source_item->context = co_await context->Move(
-              new_item, std::move(destination), stdx::stop_token());
+              new_item, std::move(destination), d->stop_source_.get_token());
         }
 
         co_return STATUS_SUCCESS;
@@ -668,10 +662,19 @@ class WinFspContext {
     });
   }
 
-  struct EventBaseDeleter {
-    void operator()(event_base* event_base) const {
-      event_base_free(event_base);
+  class ContextWrapper : public std::optional<FileSystemContext> {
+   public:
+    ContextWrapper(WinFspContext* context) : context_(context) {}
+
+    ~ContextWrapper() {
+      context_->Do([&]() -> Task<NTSTATUS> {
+        reset();
+        co_return STATUS_SUCCESS;
+      });
     }
+
+   private:
+    WinFspContext* context_;
   };
 
   FSP_FSCTL_VOLUME_PARAMS volume_params_ = {.SectorSize = kAllocationUnit,
@@ -707,13 +710,58 @@ class WinFspContext {
                                            .SetSecurity = nullptr,
                                            .ReadDirectory = ReadDirectory};
 
-  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
   coro::util::EventLoop event_loop_;
-  std::promise<void> initialized_;
-  FileSystemContext* context_ = nullptr;
-  std::future<void> event_loop_thread_;
+  ContextWrapper context_;
+  stdx::stop_source stop_source_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDeleter> filesystem_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDispatcherDeleter> dispatcher_;
+};
+
+class WinFspServiceContext {
+ public:
+  WinFspServiceContext(PWSTR mountpoint)
+      : event_base_([] {
+          evthread_use_windows_threads();
+          return event_base_new();
+        }()),
+        event_loop_thread_(event_base_.get()),
+        context_(event_base_.get(), mountpoint) {}
+
+ private:
+  class EventLoopThread {
+   public:
+    EventLoopThread(event_base* event_base)
+        : event_base_(event_base),
+          event_loop_thread_(std::async(std::launch::async, [&] { Main(); })) {}
+
+    ~EventLoopThread() {
+      Check(event_base_loopexit(event_base_, nullptr));
+      event_loop_thread_.get();
+    }
+
+   private:
+    void Main() {
+      try {
+        if (event_base_loop(event_base_, EVLOOP_NO_EXIT_ON_EMPTY) == -1) {
+          throw std::runtime_error("event_base_dispatch error");
+        }
+      } catch (...) {
+      }
+    }
+
+    event_base* event_base_;
+    std::future<void> event_loop_thread_;
+  };
+
+  struct EventBaseDeleter {
+    void operator()(event_base* event_base) const {
+      event_base_free(event_base);
+    }
+  };
+
+  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
+  EventLoopThread event_loop_thread_;
+  WinFspContext context_;
 };
 
 }  // namespace
@@ -723,8 +771,8 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
     if (argc > 2) {
       return STATUS_INVALID_PARAMETER;
     }
-    service->UserContext =
-        new WinFspContext(argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
+    service->UserContext = new WinFspServiceContext(
+        argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
     FspServiceSetExitCode(service, e.status());
@@ -736,7 +784,7 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
 }
 
 NTSTATUS SvcStop(FSP_SERVICE* service) {
-  delete reinterpret_cast<WinFspContext*>(service->UserContext);
+  delete reinterpret_cast<WinFspServiceContext*>(service->UserContext);
   return STATUS_SUCCESS;
 }
 
