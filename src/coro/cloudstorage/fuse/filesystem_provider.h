@@ -251,7 +251,7 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
   CurrentRead& current_read = *context.current_read_;
   if (std::optional<std::string> chunk =
           co_await cache_file->Read(offset, static_cast<size_t>(size))) {
-    co_return* chunk;
+    co_return *chunk;
   }
   stdx::stop_callback cb(stop_token,
                          [&] { context.stop_source_.request_stop(); });
@@ -439,26 +439,26 @@ auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
                                                std::optional<int64_t> size,
                                                stdx::stop_token stop_token)
     -> Task<ItemContextT> {
-  if constexpr (ItemContextT::kWriteSupported) {
-    if (config_.buffered_write ||
-        (CloudProvider::kIsFileContentSizeRequired && !size)) {
-      co_return co_await CreateBufferedUpload(parent, name,
-                                              std::move(stop_token));
-    }
-    co_return std::visit(
-        [&]<typename Directory>(const Directory& parent) {
-          ItemContextT d(/*item=*/std::nullopt, parent);
-          d.current_streaming_write_ =
+  co_return co_await std::visit(
+      [&]<typename Directory>(const Directory& d) -> Task<ItemContextT> {
+        if constexpr (CanCreateFile<Directory, CloudProvider>) {
+          if (config_.buffered_write ||
+              (CloudProvider::IsFileContentSizeRequired(d) && !size)) {
+            co_return co_await CreateBufferedUpload(parent, name,
+                                                    std::move(stop_token));
+          }
+          ItemContextT context(/*item=*/std::nullopt, d);
+          context.current_streaming_write_ =
               std::make_unique<CurrentStreamingWriteT<>>(
                   std::in_place_type_t<
                       CurrentStreamingWrite<CloudProvider, Directory>>{},
-                  thread_pool_, event_loop_, provider_, parent, size, name);
-          return d;
-        },
-        std::get<Directory>(parent.item_.value()));
-  } else {
-    throw CloudException("write not supported");
-  }
+                  thread_pool_, event_loop_, provider_, d, size, name);
+          co_return context;
+        } else {
+          throw CloudException("can't create file");
+        }
+      },
+      std::get<Directory>(parent.item_.value()));
 }
 
 template <typename CloudProvider>
@@ -491,12 +491,16 @@ auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
       if (item.GetSize() == 0) {
         std::visit(
             [&]<typename Directory>(const Directory& parent) {
-              item.current_streaming_write_ =
-                  std::make_unique<CurrentStreamingWriteT<>>(
-                      std::in_place_type_t<
-                          CurrentStreamingWrite<CloudProvider, Directory>>{},
-                      thread_pool_, event_loop_, provider_, parent,
-                      /*size=*/std::nullopt, item.GetName());
+              if constexpr (CanCreateFile<Directory, CloudProvider>) {
+                item.current_streaming_write_ =
+                    std::make_unique<CurrentStreamingWriteT<>>(
+                        std::in_place_type_t<
+                            CurrentStreamingWrite<CloudProvider, Directory>>{},
+                        thread_pool_, event_loop_, provider_, parent,
+                        /*size=*/std::nullopt, item.GetName());
+              } else {
+                throw CloudException("can't write");
+              }
             },
             item.parent_.value());
       } else {
@@ -583,12 +587,17 @@ auto FileSystemProvider<CloudProvider>::FlushBufferedUpload(
   auto* file = current_write.tmpfile.get();
   auto file_size = co_await util::GetFileSize(thread_pool_, file);
   auto item = co_await std::visit(
-      [&](const auto& d) -> Task<File> {
-        co_return co_await provider_->CreateFile(
-            d, current_write.new_name,
-            typename CloudProvider::FileContent{
-                .data = util::ReadFile(thread_pool_, file), .size = file_size},
-            stop_token);
+      [&]<typename Directory>(const Directory& d) -> Task<File> {
+        if constexpr (CanCreateFile<Directory, CloudProvider>) {
+          co_return co_await provider_->CreateFile(
+              d, current_write.new_name,
+              typename CloudProvider::FileContent{
+                  .data = util::ReadFile(thread_pool_, file),
+                  .size = file_size},
+              stop_token);
+        } else {
+          throw CloudException("can't create file");
+        }
       },
       *context.parent_);
   ItemContextT new_item{std::move(item), context.parent_};
