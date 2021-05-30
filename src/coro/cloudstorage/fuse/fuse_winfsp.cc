@@ -765,9 +765,13 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
         argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
+    service->UserContext = nullptr;
+    std::cerr << "FILESYSTEM EXCEPTION " << e.what() << "\n";
     FspServiceSetExitCode(service, e.status());
     return e.status();
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    service->UserContext = nullptr;
+    std::cerr << "ERROR " << e.what() << "\n";
     FspServiceSetExitCode(service, STATUS_INVALID_DEVICE_REQUEST);
     return STATUS_INVALID_DEVICE_REQUEST;
   }
