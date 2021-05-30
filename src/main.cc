@@ -60,6 +60,8 @@ struct WideDebugStream : std::wstreambuf {
 struct WindowData {
   FSP_SERVICE* service;
   FileSystemContext* context;
+  coro::util::EventLoop* event_loop;
+  coro::Promise<void> quit;
   std::promise<NTSTATUS> initialized;
 };
 
@@ -83,8 +85,7 @@ LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           if (data->service) {
             FspServiceStop(data->service);
           } else {
-            data->context->RunOnEventLoop(
-                [&]() -> Task<> { co_await data->context->Quit(); });
+            data->event_loop->RunOnEventLoop([&] { data->quit.SetValue(); });
           }
           PostQuitMessage(EXIT_SUCCESS);
         }
@@ -192,28 +193,36 @@ int MainWithWinFSP(HINSTANCE instance) {
   return service_thread.get();
 }
 
+Task<> CoRunWithNoWinFSP(WindowData* data, event_base* event_base) {
+  try {
+    FileSystemContext context{event_base};
+    coro::util::EventLoop loop{event_base};
+    data->context = &context;
+    data->event_loop = &loop;
+    data->initialized.set_value(STATUS_SUCCESS);
+    co_await data->quit;
+    co_await context.Quit();
+  } catch (...) {
+    data->initialized.set_exception(std::current_exception());
+  }
+  data->context = nullptr;
+  data->event_loop = nullptr;
+}
+
 int MainWithNoWinFSP(HINSTANCE instance) {
   WindowData window_data{};
   auto service_thread = std::async(std::launch::async, [&] {
-    try {
-      evthread_use_windows_threads();
-      auto event_loop = Create<event_base_free>(event_base_new());
-      FileSystemContext context(event_loop.get());
-      window_data.context = &context;
-      window_data.initialized.set_value(STATUS_SUCCESS);
-      event_base_dispatch(event_loop.get());
-      window_data.context = nullptr;
-      return STATUS_SUCCESS;
-    } catch (...) {
-      window_data.initialized.set_exception(std::current_exception());
-      throw;
-    }
+    evthread_use_windows_threads();
+    auto event_loop = Create<event_base_free>(event_base_new());
+    coro::Invoke(CoRunWithNoWinFSP(&window_data, event_loop.get()));
+    event_base_dispatch(event_loop.get());
+    return STATUS_SUCCESS;
   });
   window_data.initialized.get_future().get();
   auto quit_service = AtScopeExit([&] {
-    if (window_data.context) {
-      window_data.context->RunOnEventLoop(
-          [&]() -> Task<> { co_await window_data.context->Quit(); });
+    if (window_data.event_loop) {
+      window_data.event_loop->RunOnEventLoop(
+          [&] { window_data.quit.SetValue(); });
     }
   });
 
