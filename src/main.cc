@@ -167,6 +167,7 @@ int MainWithWinFSP(HINSTANCE instance) {
 
   auto service_thread =
       std::async(std::launch::async, FspServiceLoop, service.get());
+  auto scope_guard = AtScopeExit([&] { FspServiceStop(service.get()); });
   Check(window_data.initialized.get_future().get(), "SvcStart");
 
   auto icon =
