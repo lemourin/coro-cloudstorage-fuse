@@ -20,9 +20,6 @@ using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::util::AtScopeExit;
 
-using FileSystemProviderT = FileSystemContext::FileSystemProviderT;
-using FileContext = FileSystemProviderT::ItemContextT;
-
 NTSTATUS ToStatus(const CloudException& e) {
   switch (e.type()) {
     case CloudException::Type::kNotFound:
@@ -84,13 +81,16 @@ std::wstring ToWindowsPath(const char* path) {
   return std::wstring(p);
 }
 
+template <typename FileSystemProviderT>
 class WinFspContext {
  public:
   WinFspContext(coro::util::EventLoop* event_loop, FileSystemProviderT* context,
-                PWSTR mountpoint)
+                PWSTR mountpoint, const wchar_t* prefix)
       : event_loop_(event_loop),
         context_(context),
         filesystem_([&] {
+          memcpy(volume_params_.Prefix, prefix,
+                 sizeof(wchar_t) * (wcslen(prefix) + 1));
           FSP_FILE_SYSTEM* filesystem;
           Check(FspFileSystemCreate(
               const_cast<PWSTR>(L"" FSP_FSCTL_NET_DEVICE_NAME), &volume_params_,
@@ -114,6 +114,8 @@ class WinFspContext {
   }
 
  private:
+  using FileContext = FileSystemProviderT::ItemContextT;
+
   struct FuseFileContext {
     FileContext context;
     std::string path;
@@ -696,7 +698,8 @@ class WinFspServiceContext {
         event_loop_thread_(event_base_.get()),
         event_loop_(event_base_.get()),
         fs_context_(event_base_.get()),
-        context_(&event_loop_, &fs_context_->fs(), mountpoint) {}
+        context_(&event_loop_, &fs_context_->fs(), mountpoint,
+                 L"\\cloud\\share") {}
 
  private:
   class EventLoopThread {
@@ -751,7 +754,7 @@ class WinFspServiceContext {
   EventLoopThread event_loop_thread_;
   coro::util::EventLoop event_loop_;
   ContextWrapper fs_context_;
-  WinFspContext context_;
+  WinFspContext<FileSystemContext::FileSystemProviderT> context_;
 };
 
 }  // namespace
