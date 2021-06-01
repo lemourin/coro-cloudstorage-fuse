@@ -81,11 +81,13 @@ std::wstring ToWindowsPath(const char* path) {
   return std::wstring(p);
 }
 
-template <typename FileSystemProviderT>
+template <typename FileSystemProvider>
 class WinFspContext {
  public:
+  using FileSystemProviderT = FileSystemProvider;
+
   WinFspContext(coro::util::EventLoop* event_loop, FileSystemProviderT* context,
-                PWSTR mountpoint, const wchar_t* prefix)
+                const wchar_t* mountpoint, const wchar_t* prefix)
       : event_loop_(event_loop),
         context_(context),
         filesystem_([&] {
@@ -99,7 +101,8 @@ class WinFspContext {
           return filesystem;
         }()),
         dispatcher_([&] {
-          Check(FspFileSystemSetMountPoint(filesystem_.get(), mountpoint));
+          Check(FspFileSystemSetMountPoint(filesystem_.get(),
+                                           const_cast<wchar_t*>(mountpoint)));
           Check(FspFileSystemStartDispatcher(filesystem_.get(), 0));
           return filesystem_.get();
         }()) {}
@@ -109,12 +112,10 @@ class WinFspContext {
   WinFspContext& operator=(const WinFspContext&) = delete;
   WinFspContext& operator=(WinFspContext&&) = delete;
 
-  ~WinFspContext() {
-    Do([&] { stop_source_.request_stop(); });
-  }
+  ~WinFspContext() { stop_source_.request_stop(); }
 
  private:
-  using FileContext = FileSystemProviderT::ItemContextT;
+  using FileContext = typename FileSystemProviderT::ItemContextT;
 
   struct FuseFileContext {
     FileContext context;
@@ -659,8 +660,7 @@ class WinFspContext {
                                             .ReadOnlyVolume = 0,
                                             .FlushAndPurgeOnCleanup = 1,
                                             .UmFileContextIsUserContext2 = 1,
-                                            .Prefix = L"\\cloud\\share",
-                                            .FileSystemName = L"cloud"};
+                                            .FileSystemName = L"cloudfs"};
   FSP_FILE_SYSTEM_INTERFACE operations_ = {.GetVolumeInfo = GetVolumeInfo,
                                            .SetVolumeLabel = nullptr,
                                            .GetSecurityByName = nullptr,
@@ -690,18 +690,107 @@ class WinFspContext {
 
 class WinFspServiceContext {
  public:
-  WinFspServiceContext(PWSTR mountpoint)
+  WinFspServiceContext()
       : event_base_([] {
           evthread_use_windows_threads();
           return event_base_new();
         }()),
         event_loop_thread_(event_base_.get()),
         event_loop_(event_base_.get()),
-        fs_context_(event_base_.get()),
-        context_(&event_loop_, &fs_context_->fs(), mountpoint,
-                 L"\\cloud\\share") {}
+        fs_context_(this) {}
+
+  WinFspServiceContext(const WinFspServiceContext&) = delete;
+  WinFspServiceContext(WinFspServiceContext&&) = delete;
+  WinFspServiceContext& operator=(const WinFspServiceContext&) = delete;
+  WinFspServiceContext& operator=(WinFspServiceContext&&) = delete;
 
  private:
+  using CloudProviderTypeList =
+      coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
+                           PCloud, WebDAV, YandexDisk>;
+
+  struct CloudProviderAccountListener;
+
+  using HttpT = http::CacheHttp<http::CurlHttp>;
+  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
+                                     util::ThumbnailGenerator, util::Muxer>;
+  using AccountManagerHandlerT =
+      util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
+                                  util::ThumbnailGenerator,
+                                  CloudProviderAccountListener>;
+  using CloudProviderAccountT = AccountManagerHandlerT::CloudProviderAccount;
+
+  template <typename CloudProvider>
+  class FileProvider {
+   public:
+    using CloudProviderT = CloudProvider;
+
+    FileProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
+                 coro::util::ThreadPool* thread_pool, const wchar_t* mountpoint,
+                 const wchar_t* prefix)
+        : provider_(provider),
+          fs_provider_(provider, event_loop, thread_pool,
+                       FileSystemProviderConfig()),
+          context_(event_loop, &fs_provider_, mountpoint, prefix) {}
+
+    const CloudProvider* GetCloudProvider() const { return provider_; }
+
+   private:
+    CloudProvider* provider_;
+    FileSystemProvider<CloudProvider> fs_provider_;
+    WinFspContext<FileSystemProvider<CloudProvider>> context_;
+  };
+
+  template <typename F>
+  struct MapToFileProvider : std::type_identity<FileProvider<F>> {};
+
+  class FileSystemContext;
+
+  struct CloudProviderAccountListener {
+    void OnCreate(CloudProviderAccountT* account);
+    void OnDestroy(CloudProviderAccountT* account);
+
+    FileSystemContext* context;
+  };
+
+  class FileSystemContext {
+   public:
+    FileSystemContext(WinFspServiceContext* context)
+        : event_loop_(context->event_base_.get()),
+          thread_pool_(event_loop_),
+          http_(http::CurlHttp(context->event_base_.get())),
+          thumbnail_generator_(&thread_pool_, &event_loop_),
+          muxer_(&event_loop_, &thread_pool_),
+          factory_(event_loop_, http_, thumbnail_generator_, muxer_),
+          http_server_(
+              context->event_base_.get(),
+              http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
+              AccountManagerHandlerT(factory_, thumbnail_generator_,
+                                     CloudProviderAccountListener{this})) {}
+
+    FileSystemContext(const FileSystemContext&) = delete;
+    FileSystemContext(FileSystemContext&&) = delete;
+    FileSystemContext& operator=(const FileSystemContext&) = delete;
+    FileSystemContext& operator=(FileSystemContext&&) = delete;
+
+    Task<> Quit() { return http_server_.Quit(); }
+
+   private:
+    friend struct CloudProviderAccountListener;
+
+    coro::util::EventLoop event_loop_;
+    coro::util::ThreadPool thread_pool_;
+    HttpT http_;
+    coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
+    coro::cloudstorage::util::Muxer muxer_;
+    CloudFactoryT factory_;
+    std::list<coro::util::FromTypeListT<
+        std::variant,
+        coro::util::MapT<MapToFileProvider, CloudProviderAccountT::Ts>>>
+        contexts_;
+    coro::http::HttpServer<AccountManagerHandlerT> http_server_;
+  };
+
   class EventLoopThread {
    public:
     EventLoopThread(event_base* event_base)
@@ -735,27 +824,79 @@ class WinFspServiceContext {
 
   class ContextWrapper : public std::optional<FileSystemContext> {
    public:
-    ContextWrapper(event_base* event_base) : event_loop_(event_base) {
-      event_loop_.Do([&] { emplace(event_base); });
+    ContextWrapper(WinFspServiceContext* context) : context_(context) {
+      context_->event_loop_.Do([&] { emplace(context); });
     }
 
     ~ContextWrapper() {
-      event_loop_.Do([&]() -> Task<> {
+      context_->event_loop_.Do([&]() -> Task<> {
         co_await(*this)->Quit();
         reset();
       });
     }
 
    private:
-    coro::util::EventLoop event_loop_;
+    WinFspServiceContext* context_;
   };
 
   std::unique_ptr<event_base, EventBaseDeleter> event_base_;
   EventLoopThread event_loop_thread_;
   coro::util::EventLoop event_loop_;
   ContextWrapper fs_context_;
-  WinFspContext<FileSystemContext::FileSystemProviderT> context_;
 };
+
+std::wstring ToWideString(std::string_view input) {
+  int length = MultiByteToWideChar(
+      CP_UTF8, 0, input.data(), static_cast<int>(input.length()), nullptr, 0);
+  std::wstring buffer(length, 0);
+  MultiByteToWideChar(CP_UTF8, 0, input.data(),
+                      static_cast<int>(input.length()), buffer.data(),
+                      static_cast<int>(buffer.length()));
+  return buffer;
+}
+
+void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
+    CloudProviderAccountT* account) {
+  std::visit(
+      [&]<typename CloudProvider>(CloudProvider& p) {
+        using FileProviderT = FileProvider<CloudProvider>;
+        context->contexts_.emplace_back(
+            std::in_place_type_t<FileProviderT>{}, &p, &context->event_loop_,
+            &context->thread_pool_, nullptr,
+            ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
+                                      account->username))
+                .c_str());
+      },
+      account->provider);
+  std::cerr << "CREATE " << account->GetId() << "\n";
+}
+
+void WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
+    CloudProviderAccountT* account) {
+  std::visit(
+      [&]<typename CloudProvider>(const CloudProvider& p) {
+        auto& contexts = context->contexts_;
+        auto it = std::find_if(
+            contexts.begin(), contexts.end(), [&](const auto& provider) {
+              return std::visit(
+                  [&]<typename FileProvider>(const FileProvider& other) {
+                    if constexpr (std::is_same_v<
+                                      CloudProvider,
+                                      typename FileProvider::CloudProviderT>) {
+                      return other.GetCloudProvider() == &p;
+                    } else {
+                      return false;
+                    }
+                  },
+                  provider);
+            });
+        if (it != contexts.end()) {
+          contexts.erase(it);
+        }
+      },
+      account->provider);
+  std::cerr << "DESTROY " << account->GetId() << "\n";
+}
 
 }  // namespace
 
@@ -764,8 +905,7 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
     if (argc > 2) {
       return STATUS_INVALID_PARAMETER;
     }
-    service->UserContext = new WinFspServiceContext(
-        argc == 2 ? argv[1] : const_cast<wchar_t*>(L"X:"));
+    service->UserContext = new WinFspServiceContext;
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
     service->UserContext = nullptr;
