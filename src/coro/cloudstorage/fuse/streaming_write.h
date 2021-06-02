@@ -83,7 +83,7 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
   if (flushed_) {
     throw CloudException("write after flush");
   }
-  if (CloudProvider::IsFileContentSizeRequired(parent_) &&
+  if (provider_->IsFileContentSizeRequired(parent_) &&
       current_offset_ + static_cast<int64_t>(chunk.size()) > size_) {
     throw CloudException("write past declared size");
   }
@@ -157,7 +157,7 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
     done_.SetValue();
     co_yield std::move(chunk);
   }
-  if (CloudProvider::IsFileContentSizeRequired(parent_) &&
+  if (provider_->IsFileContentSizeRequired(parent_) &&
       size_ != current_offset_) {
     throw CloudException("incomplete file");
   }

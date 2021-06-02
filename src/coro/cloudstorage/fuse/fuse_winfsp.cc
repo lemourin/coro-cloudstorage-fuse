@@ -2,6 +2,7 @@
 
 #include <coro/cloudstorage/fuse/filesystem_context.h>
 #include <coro/cloudstorage/fuse/filesystem_provider.h>
+#include <coro/cloudstorage/util/abstract_cloud_provider.h>
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
@@ -18,6 +19,7 @@ const int kAllocationUnit = 1;
 
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
+using ::coro::cloudstorage::util::AbstractCloudProvider;
 using ::coro::util::AtScopeExit;
 
 NTSTATUS ToStatus(const CloudException& e) {
@@ -720,29 +722,27 @@ class WinFspServiceContext {
                                   CloudProviderAccountListener>;
   using CloudProviderAccountT = AccountManagerHandlerT::CloudProviderAccount;
 
-  template <typename CloudProvider>
   class FileProvider {
    public:
-    using CloudProviderT = CloudProvider;
-
+    template <typename CloudProvider>
     FileProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
                  coro::util::ThreadPool* thread_pool, const wchar_t* mountpoint,
                  const wchar_t* prefix)
-        : provider_(provider),
-          fs_provider_(provider, event_loop, thread_pool,
+        : provider_(std::make_unique<
+                    AbstractCloudProvider::CloudProviderImpl<CloudProvider>>(
+              provider)),
+          fs_provider_(provider_.get(), event_loop, thread_pool,
                        FileSystemProviderConfig()),
           context_(event_loop, &fs_provider_, mountpoint, prefix) {}
 
-    const CloudProvider* GetCloudProvider() const { return provider_; }
+    intptr_t GetId() const { return provider_->GetId(); }
 
    private:
-    CloudProvider* provider_;
-    FileSystemProvider<CloudProvider> fs_provider_;
-    WinFspContext<FileSystemProvider<CloudProvider>> context_;
+    std::unique_ptr<AbstractCloudProvider::CloudProvider> provider_;
+    FileSystemProvider<AbstractCloudProvider::CloudProvider> fs_provider_;
+    WinFspContext<FileSystemProvider<AbstractCloudProvider::CloudProvider>>
+        context_;
   };
-
-  template <typename F>
-  struct MapToFileProvider : std::type_identity<FileProvider<F>> {};
 
   class FileSystemContext;
 
@@ -784,10 +784,7 @@ class WinFspServiceContext {
     coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
     coro::cloudstorage::util::Muxer muxer_;
     CloudFactoryT factory_;
-    std::list<coro::util::FromTypeListT<
-        std::variant,
-        coro::util::MapT<MapToFileProvider, CloudProviderAccountT::Ts>>>
-        contexts_;
+    std::list<FileProvider> contexts_;
     coro::http::HttpServer<AccountManagerHandlerT> http_server_;
   };
 
@@ -859,10 +856,8 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
     CloudProviderAccountT* account) {
   std::visit(
       [&]<typename CloudProvider>(CloudProvider& p) {
-        using FileProviderT = FileProvider<CloudProvider>;
         context->contexts_.emplace_back(
-            std::in_place_type_t<FileProviderT>{}, &p, &context->event_loop_,
-            &context->thread_pool_, nullptr,
+            &p, &context->event_loop_, &context->thread_pool_, nullptr,
             ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
                                       account->username))
                 .c_str());
@@ -878,17 +873,7 @@ void WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
         auto& contexts = context->contexts_;
         auto it = std::find_if(
             contexts.begin(), contexts.end(), [&](const auto& provider) {
-              return std::visit(
-                  [&]<typename FileProvider>(const FileProvider& other) {
-                    if constexpr (std::is_same_v<
-                                      CloudProvider,
-                                      typename FileProvider::CloudProviderT>) {
-                      return other.GetCloudProvider() == &p;
-                    } else {
-                      return false;
-                    }
-                  },
-                  provider);
+              return provider.GetId() == reinterpret_cast<intptr_t>(&p);
             });
         if (it != contexts.end()) {
           contexts.erase(it);

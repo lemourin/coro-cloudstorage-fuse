@@ -443,7 +443,7 @@ auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
       [&]<typename Directory>(const Directory& d) -> Task<ItemContextT> {
         if constexpr (CanCreateFile<Directory, CloudProvider>) {
           if (config_.buffered_write ||
-              (CloudProvider::IsFileContentSizeRequired(d) && !size)) {
+              (provider_->IsFileContentSizeRequired(d) && !size)) {
             co_return co_await CreateBufferedUpload(parent, name,
                                                     std::move(stop_token));
           }
