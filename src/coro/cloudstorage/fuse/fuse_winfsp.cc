@@ -728,20 +728,25 @@ class WinFspServiceContext {
     FileProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
                  coro::util::ThreadPool* thread_pool, const wchar_t* mountpoint,
                  const wchar_t* prefix)
-        : provider_(std::make_unique<
-                    AbstractCloudProvider::CloudProviderImpl<CloudProvider>>(
-              provider)),
-          fs_provider_(provider_.get(), event_loop, thread_pool,
+        : abstract_provider_(
+              std::make_unique<
+                  AbstractCloudProvider::CloudProviderImpl<CloudProvider>>(
+                  provider)),
+          provider_(event_loop, 10000, abstract_provider_.get()),
+          fs_provider_(&provider_, event_loop, thread_pool,
                        FileSystemProviderConfig()),
           context_(event_loop, &fs_provider_, mountpoint, prefix) {}
 
-    intptr_t GetId() const { return provider_->GetId(); }
+    intptr_t GetId() const { return abstract_provider_->GetId(); }
 
    private:
-    std::unique_ptr<AbstractCloudProvider::CloudProvider> provider_;
-    FileSystemProvider<AbstractCloudProvider::CloudProvider> fs_provider_;
-    WinFspContext<FileSystemProvider<AbstractCloudProvider::CloudProvider>>
-        context_;
+    using CloudProviderT = util::TimingOutCloudProvider<
+        AbstractCloudProvider::CloudProvider>::CloudProvider;
+
+    std::unique_ptr<AbstractCloudProvider::CloudProvider> abstract_provider_;
+    CloudProviderT provider_;
+    FileSystemProvider<CloudProviderT> fs_provider_;
+    WinFspContext<FileSystemProvider<CloudProviderT>> context_;
   };
 
   class FileSystemContext;

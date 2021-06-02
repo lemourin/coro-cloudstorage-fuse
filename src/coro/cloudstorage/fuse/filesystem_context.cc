@@ -30,7 +30,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
           return CreateCloudProvider<TestCloudProviderT>(factory_);
         } else {
           return CloudProviderT(&event_loop_, config.timeout_ms,
-                                MergedCloudProviderT());
+                                &merged_provider_);
         }
       }()),
       fs_(&provider_, &event_loop_, &thread_pool_, config.fs_config),

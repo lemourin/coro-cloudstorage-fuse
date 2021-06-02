@@ -100,6 +100,7 @@ class FileSystemContext {
   coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
   coro::cloudstorage::util::Muxer muxer_;
   CloudFactoryT factory_;
+  MergedCloudProviderT merged_provider_;
   CloudProviderT provider_;
   FileSystemProviderT fs_;
   coro::http::HttpServer<AccountManagerHandlerT> http_server_;
