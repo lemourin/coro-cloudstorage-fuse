@@ -114,7 +114,9 @@ class WinFspContext {
   WinFspContext& operator=(const WinFspContext&) = delete;
   WinFspContext& operator=(WinFspContext&&) = delete;
 
-  ~WinFspContext() { stop_source_.request_stop(); }
+  ~WinFspContext() {
+    event_loop_->Do([&] { stop_source_.request_stop(); });
+  }
 
  private:
   using FileContext = typename FileSystemProviderT::ItemContextT;
@@ -140,12 +142,12 @@ class WinFspContext {
   };
 
   template <typename F>
-  auto RunOnEventLoop(F func) {
+  void RunOnEventLoop(F func) {
     return event_loop_->RunOnEventLoop(std::move(func));
   }
 
   template <typename F>
-  auto Do(F func) {
+  NTSTATUS Do(F func) {
     return event_loop_->Do(std::move(func));
   }
 
@@ -753,7 +755,7 @@ class WinFspServiceContext {
 
   struct CloudProviderAccountListener {
     void OnCreate(CloudProviderAccountT* account);
-    void OnDestroy(CloudProviderAccountT* account);
+    Task<> OnDestroy(CloudProviderAccountT* account);
 
     FileSystemContext* context;
   };
@@ -789,6 +791,7 @@ class WinFspServiceContext {
     coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
     coro::cloudstorage::util::Muxer muxer_;
     CloudFactoryT factory_;
+    std::mutex mutex;
     std::list<FileProvider> contexts_;
     coro::http::HttpServer<AccountManagerHandlerT> http_server_;
   };
@@ -861,6 +864,7 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
     CloudProviderAccountT* account) {
   std::visit(
       [&]<typename CloudProvider>(CloudProvider& p) {
+        std::unique_lock lock{context->mutex};
         context->contexts_.emplace_back(
             &p, &context->event_loop_, &context->thread_pool_, nullptr,
             ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
@@ -871,18 +875,21 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
   std::cerr << "CREATE " << account->GetId() << "\n";
 }
 
-void WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
+Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
     CloudProviderAccountT* account) {
-  std::visit(
-      [&]<typename CloudProvider>(const CloudProvider& p) {
-        auto& contexts = context->contexts_;
-        auto it = std::find_if(
-            contexts.begin(), contexts.end(), [&](const auto& provider) {
-              return provider.GetId() == reinterpret_cast<intptr_t>(&p);
-            });
-        if (it != contexts.end()) {
-          contexts.erase(it);
-        }
+  co_await std::visit(
+      [&]<typename CloudProvider>(const CloudProvider& p) -> Task<> {
+        co_await context->thread_pool_.Invoke([&] {
+          std::unique_lock lock{context->mutex};
+          auto& contexts = context->contexts_;
+          auto it = std::find_if(
+              contexts.begin(), contexts.end(), [&](const auto& provider) {
+                return provider.GetId() == reinterpret_cast<intptr_t>(&p);
+              });
+          if (it != contexts.end()) {
+            contexts.erase(it);
+          }
+        });
       },
       account->provider);
   std::cerr << "DESTROY " << account->GetId() << "\n";

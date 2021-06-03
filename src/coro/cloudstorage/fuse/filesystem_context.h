@@ -63,7 +63,7 @@ class FileSystemContext {
 
   struct ForwardToMergedCloudProvider {
     void OnCreate(CloudProviderAccountT* account);
-    void OnDestroy(CloudProviderAccountT* account);
+    Task<> OnDestroy(CloudProviderAccountT* account);
 
     MergedCloudProviderT* provider;
   };

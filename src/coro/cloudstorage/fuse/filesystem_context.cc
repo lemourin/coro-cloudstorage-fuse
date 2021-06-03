@@ -10,12 +10,13 @@ void FileSystemContext::ForwardToMergedCloudProvider::OnCreate(
   }
 }
 
-void FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
+Task<> FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
     CloudProviderAccountT* account) {
   if constexpr (!kTestCloudProvider) {
     std::visit([&](auto& d) { provider->RemoveAccount(&d); },
                account->provider);
   }
+  co_return;
 }
 
 FileSystemContext::FileSystemContext(event_base* event_base, Config config)
