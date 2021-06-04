@@ -26,6 +26,8 @@ NTSTATUS ToStatus(const CloudException& e) {
   switch (e.type()) {
     case CloudException::Type::kNotFound:
       return STATUS_OBJECT_NAME_NOT_FOUND;
+    case CloudException::Type::kUnauthorized:
+      return STATUS_ACCESS_DENIED;
     default:
       return STATUS_INVALID_PARAMETER;
   }
