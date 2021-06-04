@@ -1,5 +1,6 @@
 #include "fuse_winfsp.h"
 
+#include <coro/cloudstorage/fuse/auth_data.h>
 #include <coro/cloudstorage/fuse/filesystem_context.h>
 #include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/util/abstract_cloud_provider.h>
@@ -718,8 +719,9 @@ class WinFspServiceContext {
   struct CloudProviderAccountListener;
 
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
-                                     util::ThumbnailGenerator, util::Muxer>;
+  using CloudFactoryT =
+      CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
+                   util::Muxer, AuthData>;
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
                                   util::ThumbnailGenerator,
