@@ -2,6 +2,7 @@
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H
 
 #include <coro/cloudstorage/cloud_factory.h>
+#include <coro/cloudstorage/fuse/auth_data.h>
 #include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/providers/amazon_s3.h>
 #include <coro/cloudstorage/providers/box.h>
@@ -51,8 +52,9 @@ class FileSystemContext {
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
                            PCloud, WebDAV, YandexDisk>;
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
-                                     util::ThumbnailGenerator, util::Muxer>;
+  using CloudFactoryT =
+      CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
+                   util::Muxer, AuthData>;
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
                                   util::ThumbnailGenerator,

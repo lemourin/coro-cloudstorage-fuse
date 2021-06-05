@@ -74,6 +74,9 @@ struct FuseContext {
   FileSystemProvider& context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
+  int pending_request_count;
+  bool quit;
+  Promise<void> quit_semaphore;
 };
 
 struct EventBaseDeleter {
@@ -129,6 +132,18 @@ template <auto F, typename... Args>
 struct Coroutine<F, coro::util::TypeList<fuse_req_t, Args...>> {
   static void Do(fuse_req_t req, Args... args) {
     coro::Invoke([req, args...]() -> Task<> {
+      auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+      if (context->quit) {
+        fuse_reply_err(req, ECANCELED);
+        co_return;
+      }
+      context->pending_request_count++;
+      auto scope_guard = AtScopeExit([&] {
+        context->pending_request_count--;
+        if (context->quit && context->pending_request_count == 0) {
+          context->quit_semaphore.SetValue();
+        }
+      });
       try {
         co_await F(req, args...);
       } catch (const CloudException& e) {
@@ -792,6 +807,8 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     }
     co_await cb_data.quit;
     co_await fs_context.Quit();
+    context.quit = true;
+    co_await context.quit_semaphore;
     co_return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
