@@ -27,6 +27,7 @@ if(WIN32)
     configure_file(src/resources.rc.in resources.rc)
     target_sources(coro-cloudstorage-fuse PRIVATE
         resources.rc
+        src/coro/cloudstorage/fuse/fuse_winfsp_context.h
         src/coro/cloudstorage/fuse/fuse_winfsp.h
         src/coro/cloudstorage/fuse/fuse_winfsp.cc)
 

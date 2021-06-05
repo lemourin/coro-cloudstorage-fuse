@@ -1,11 +1,6 @@
 #ifndef FUSE_WINFSP
 #define FUSE_WINFSP
 
-// clang-format off
-#include <winsock2.h>
-#include <windows.h>
-// clang-format on
-
 #include <winfsp/winfsp.h>
 
 namespace coro::cloudstorage::fuse {
