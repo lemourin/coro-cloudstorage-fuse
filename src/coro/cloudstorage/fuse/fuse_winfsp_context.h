@@ -3,6 +3,8 @@
 
 #include <winfsp/winfsp.h>
 
+#include <cstddef>
+
 namespace coro::cloudstorage::fuse {
 
 class FileSystemException : public std::exception {
@@ -222,8 +224,8 @@ class WinFspContext {
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    d->RunOnEventLoop([d, file_context = reinterpret_cast<FuseFileContext*>(
-                              file_context)]() -> Task<> {
+    d->RunOnEventLoop([file_context = reinterpret_cast<FuseFileContext*>(
+                           file_context)]() -> Task<> {
       if (file_context) {
         FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
         delete file_context;
@@ -258,9 +260,11 @@ class WinFspContext {
               FspFileSystemReleaseDirectoryBuffer(
                   &file_context->directory_buffer);
             });
+            constexpr auto kBufferSize =
+                offsetof(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                MAX_PATH * sizeof(WCHAR);
             union {
-              UINT8 data[FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
-                         MAX_PATH * sizeof(WCHAR)];
+              UINT8 data[kBufferSize];
               FSP_FSCTL_DIR_INFO fsctl_dir_info;
             } entry_buffer;
             FSP_FSCTL_DIR_INFO* entry = &entry_buffer.fsctl_dir_info;
@@ -279,7 +283,7 @@ class WinFspContext {
             memcpy(entry->FileNameBuf, L".", sizeof(wchar_t));
             memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
             ToFileInfo(file_context->context, &entry->FileInfo);
-            entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+            entry->Size = offsetof(FSP_FSCTL_DIR_INFO, FileNameBuf) +
                           static_cast<UINT16>(sizeof(wchar_t));
             FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
                                              entry, &result);
@@ -288,7 +292,7 @@ class WinFspContext {
               memcpy(entry->FileNameBuf, L"..", 2 * sizeof(wchar_t));
               memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
               ToFileInfo(parent, &entry->FileInfo);
-              entry->Size = FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+              entry->Size = offsetof(FSP_FSCTL_DIR_INFO, FileNameBuf) +
                             static_cast<UINT16>(2 * sizeof(wchar_t));
               FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
                                                entry, &result);
@@ -304,7 +308,7 @@ class WinFspContext {
               memset(&entry->FileInfo, 0, sizeof(entry->FileInfo));
               ToFileInfo(d, &entry->FileInfo);
               entry->Size =
-                  FIELD_OFFSET(FSP_FSCTL_DIR_INFO, FileNameBuf) +
+                  offsetof(FSP_FSCTL_DIR_INFO, FileNameBuf) +
                   static_cast<UINT16>(filename.length() * sizeof(wchar_t));
               FspFileSystemFillDirectoryBuffer(&file_context->directory_buffer,
                                                entry, &result);

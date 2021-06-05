@@ -39,20 +39,16 @@ using ::coro::cloudstorage::fuse::FileSystemContext;
 
 struct DebugStream : std::streambuf {
   int_type overflow(int_type c) override {
-    if (c != EOF) {
-      TCHAR buf[] = {static_cast<TCHAR>(c), '\0'};
-      OutputDebugStringA(buf);
-    }
+    TCHAR buf[] = {static_cast<TCHAR>(c), '\0'};
+    OutputDebugStringA(buf);
     return c;
   }
 };
 
 struct WideDebugStream : std::wstreambuf {
   int_type overflow(int_type c) override {
-    if (c != EOF) {
-      WCHAR buf[] = {static_cast<WCHAR>(c), '\0'};
-      OutputDebugStringW(buf);
-    }
+    WCHAR buf[] = {static_cast<WCHAR>(c), '\0'};
+    OutputDebugStringW(buf);
     return c;
   }
 };
