@@ -74,6 +74,7 @@ struct FuseContext {
   FileSystemProvider& context;
   int next_inode = FUSE_ROOT_ID + 1;
   fuse_conn_info_opts* conn_opts;
+  std::unordered_set<FuseFileContext*> open_descriptors;
   int pending_request_count;
   bool quit;
   Promise<void> quit_semaphore;
@@ -323,12 +324,13 @@ Task<> Open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     const auto& promise = it->second.flush->promise;
     co_await promise.Get(stop_source.get_token());
   }
-  fi->fh = reinterpret_cast<uint64_t>(
+  std::unique_ptr<FuseFileContext> file_context(
       new FuseFileContext{.context = FileContext::From(it->second.context),
                           .parent = it->second.parent,
                           .flags = fi->flags});
-  if (fuse_reply_open(req, fi) != 0) {
-    delete reinterpret_cast<FuseFileContext*>(fi->fh);
+  fi->fh = reinterpret_cast<uint64_t>(file_context.get());
+  if (fuse_reply_open(req, fi) == 0) {
+    context->open_descriptors.insert(file_context.release());
   }
 }
 
@@ -340,6 +342,7 @@ Task<> Release(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi) {
   std::unique_ptr<FuseFileContext> file_context(
       reinterpret_cast<FuseFileContext*>(fi->fh));
   auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
+  context->open_descriptors.erase(file_context.get());
   if (!(file_context->flags & (O_RDWR | O_WRONLY))) {
     fuse_reply_err(req, 0);
     co_return;
@@ -604,9 +607,9 @@ Task<> Create(fuse_req_t req, fuse_ino_t parent, const char* name, mode_t mode,
                                 FuseFileContext{.parent = file_context->parent,
                                                 .flags = file_context->flags,
                                                 .name = name});
-  fi->fh = reinterpret_cast<uint64_t>(file_context.release());
-  if (fuse_reply_create(req, &entry, fi) != 0) {
-    delete reinterpret_cast<FuseFileContext*>(fi->fh);
+  fi->fh = reinterpret_cast<uint64_t>(file_context.get());
+  if (fuse_reply_create(req, &entry, fi) == 0) {
+    context->open_descriptors.insert(file_context.release());
   }
 }
 
@@ -809,6 +812,11 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     co_await fs_context.Quit();
     context.quit = true;
     co_await context.quit_semaphore;
+
+    for (FuseFileContext* file_context : context.open_descriptors) {
+      delete file_context;
+    }
+
     co_return 0;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
