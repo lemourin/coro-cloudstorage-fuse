@@ -48,6 +48,7 @@ if(WIN32)
     endif()
 else()
     target_sources(coro-cloudstorage-fuse PRIVATE
+        src/coro/cloudstorage/fuse/fuse_posix_context.h
         src/coro/cloudstorage/fuse/fuse_posix.cc
         src/coro/cloudstorage/fuse/fuse_posix.h)
 
@@ -55,6 +56,7 @@ else()
 
     pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse3)
     target_link_libraries(coro-cloudstorage-fuse PRIVATE event_pthreads PkgConfig::fuse)
+    target_compile_definitions(coro-cloudstorage-fuse PRIVATE FUSE_USE_VERSION=39)
 endif()
 
 if(MSVC)
