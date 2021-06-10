@@ -107,6 +107,7 @@ class ItemContext
   std::optional<int64_t> GetSize() const;
   ItemType GetType() const;
   std::string GetName() const;
+  std::optional<std::string> GetMimeType() const;
   bool IsPending() const { return !item_; }
 
  private:
@@ -218,6 +219,18 @@ std::string ItemContext<CloudProvider>::GetName() const {
         return std::visit([](const auto& d) { return d.name; }, d);
       },
       *item_);
+}
+
+template <typename CloudProvider>
+std::optional<std::string> ItemContext<CloudProvider>::GetMimeType() const {
+  if (!item_ || std::holds_alternative<Directory>(*item_)) {
+    return std::nullopt;
+  }
+  return std::visit(
+      [](const auto& d) {
+        return CloudProvider::GetMimeType(d);
+      },
+      std::get<File>(*item_));
 }
 
 }  // namespace coro::cloudstorage::fuse
