@@ -29,7 +29,7 @@ auto Create(T* d) {
 #include <event2/event.h>
 #include <event2/thread.h>
 
-#define kAppId "cloudstorage-fuse"
+#define kAppId TEXT("cloudstorage-fuse")
 
 constexpr int kIconResourceId = 1;
 constexpr UINT kIconMessageId = WM_APP + 1;
@@ -37,9 +37,17 @@ constexpr UINT kIconMessageId = WM_APP + 1;
 using ::coro::Task;
 using ::coro::cloudstorage::fuse::FileSystemContext;
 
+#ifdef UNICODE
+using tstring = std::wstring;
+using tstringstream = std::wstringstream;
+#else
+using tstring = std::string;
+using tstringstream = std::stringstream;
+#endif
+
 struct DebugStream : std::streambuf {
   int_type overflow(int_type c) override {
-    TCHAR buf[] = {static_cast<TCHAR>(c), '\0'};
+    CHAR buf[] = {static_cast<CHAR>(c), '\0'};
     OutputDebugStringA(buf);
     return c;
   }
@@ -64,12 +72,12 @@ struct WindowData {
 LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kIconMessageId) {
     if (lparam == WM_LBUTTONDOWN) {
-      ShellExecute(nullptr, "open", "http://localhost:12345", nullptr, nullptr,
-                   SW_SHOWNORMAL);
+      ShellExecute(nullptr, TEXT("open"), TEXT("http://localhost:12345"),
+                   nullptr, nullptr, SW_SHOWNORMAL);
     } else if (lparam == WM_RBUTTONDOWN) {
       if (POINT mouse_position; GetCursorPos(&mouse_position)) {
         HMENU menu = CreatePopupMenu();
-        AppendMenu(menu, MF_STRING, 1, "Quit");
+        AppendMenu(menu, MF_STRING, 1, TEXT("Quit"));
         SetForegroundWindow(hwnd);
         int index = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTBUTTON,
                                    mouse_position.x, mouse_position.y, 0, hwnd,
@@ -98,44 +106,45 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
   return status;
 }
 
-std::string NtStatusToString(NTSTATUS status) {
-  auto ntdll = Create<FreeLibrary>(LoadLibrary("NTDLL.DLL"));
+tstring NtStatusToString(NTSTATUS status) {
+  auto ntdll = Create<FreeLibrary>(LoadLibrary(TEXT("NTDLL.DLL")));
   if (!ntdll) {
     throw std::runtime_error("LoadLibrary error");
   }
-  char* message;
+  TCHAR* message;
   DWORD result = FormatMessage(
       FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
           FORMAT_MESSAGE_FROM_HMODULE,
       ntdll.get(), status, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
       reinterpret_cast<LPTSTR>(&message), 0, nullptr);
   if (result == 0) {
-    return "";
+    return TEXT("");
   }
   auto guard = AtScopeExit([&] { LocalFree(message); });
-  return std::string(message, message + result);
+  return tstring(message, message + result);
 }
 
-void Check(NTSTATUS status, const char* func) {
+void Check(NTSTATUS status, const TCHAR* func) {
   if (status != STATUS_SUCCESS) {
-    std::stringstream error;
-    error << "Fatal error in " << func << " (0x" << std::hex << status << ").";
+    tstringstream error;
+    error << TEXT("Fatal error in ") << func << TEXT(" (0x") << std::hex
+          << status << TEXT(").");
     if (auto status_string = NtStatusToString(status); !status_string.empty()) {
-      error << "\n" << status_string;
+      error << TEXT("\n") << status_string;
     }
     MessageBox(nullptr, error.str().c_str(), nullptr, MB_OK | MB_ICONERROR);
-    throw std::runtime_error(func);
+    throw std::runtime_error("Check error");
   }
 }
 
-void CheckSuccess(bool success, const char* func) {
+void CheckSuccess(bool success, const TCHAR* func) {
   if (!success) {
     Check(static_cast<NTSTATUS>(GetLastError()), func);
   }
 }
 
 template <typename T>
-void CheckNotNull(const T& p, const char* func) {
+void CheckNotNull(const T& p, const TCHAR* func) {
   if (!p) {
     Check(static_cast<NTSTATUS>(GetLastError()), func);
   }
@@ -147,7 +156,7 @@ int MainWithWinFSP(HINSTANCE instance) {
     Check(FspServiceCreate(const_cast<wchar_t*>(L"coro-cloudstorage-fuse"),
                            SvcStart, coro::cloudstorage::fuse::SvcStop, nullptr,
                            &service),
-          "FspServiceCreate");
+          TEXT("FspServiceCreate"));
     FspServiceAllowConsoleMode(service);
     return service;
   }());
@@ -155,7 +164,7 @@ int MainWithWinFSP(HINSTANCE instance) {
   auto hwnd = Create<DestroyWindow>(CreateWindowEx(
       0, kAppId, kAppId, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
       CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr));
-  CheckNotNull(hwnd, "CreateWindowEx");
+  CheckNotNull(hwnd, TEXT("CreateWindowEx"));
   WindowData window_data{.service = service.get()};
   SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
                    reinterpret_cast<LONG_PTR>(&window_data));
@@ -164,11 +173,11 @@ int MainWithWinFSP(HINSTANCE instance) {
   auto service_thread =
       std::async(std::launch::async, FspServiceLoop, service.get());
   auto scope_guard = AtScopeExit([&] { FspServiceStop(service.get()); });
-  Check(window_data.initialized.get_future().get(), "SvcStart");
+  Check(window_data.initialized.get_future().get(), TEXT("SvcStart"));
 
   auto icon =
       Create<DestroyIcon>(LoadIcon(instance, MAKEINTRESOURCE(kIconResourceId)));
-  CheckNotNull(icon, "LoadIcon");
+  CheckNotNull(icon, TEXT("LoadIcon"));
 
   NOTIFYICONDATA data = {.cbSize = sizeof(NOTIFYICONDATA),
                          .hWnd = hwnd.get(),
@@ -178,7 +187,7 @@ int MainWithWinFSP(HINSTANCE instance) {
                          .szTip = kAppId,
                          .szInfo = kAppId " started",
                          .szInfoTitle = kAppId};
-  CheckSuccess(Shell_NotifyIcon(NIM_ADD, &data), "Shell_NotifyIcon");
+  CheckSuccess(Shell_NotifyIcon(NIM_ADD, &data), TEXT("Shell_NotifyIcon"));
   auto delete_notify_icon_guard =
       AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
@@ -226,22 +235,23 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   auto hwnd = Create<DestroyWindow>(CreateWindowEx(
       0, kAppId, kAppId, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
       CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr));
-  CheckNotNull(hwnd, "CreateWindowEx");
+  CheckNotNull(hwnd, TEXT("CreateWindowEx"));
   SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
                    reinterpret_cast<LONG_PTR>(&window_data));
 
   NETRESOURCE netresource = {
       .dwType = RESOURCETYPE_DISK,
-      .lpLocalName = const_cast<char*>("W:"),
-      .lpRemoteName = const_cast<char*>("http://localhost:12345")};
-  Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/"",
+      .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
+      .lpRemoteName = const_cast<LPTSTR>(TEXT("http://localhost:12345"))};
+  Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/TEXT(""),
                            /*lpUserName=*/nullptr, /*dwFlags=*/0),
-        "WNetAddConnection3");
-  auto connection_guard = AtScopeExit(
-      [&] { WNetCancelConnection2("W:", /*dwFlags=*/0, /*fForce=*/true); });
+        TEXT("WNetAddConnection3"));
+  auto connection_guard = AtScopeExit([&] {
+    WNetCancelConnection2(TEXT("W:"), /*dwFlags=*/0, /*fForce=*/true);
+  });
   auto icon =
       Create<DestroyIcon>(LoadIcon(instance, MAKEINTRESOURCE(kIconResourceId)));
-  CheckNotNull(icon, "LoadIcon");
+  CheckNotNull(icon, TEXT("LoadIcon"));
 
   NOTIFYICONDATA data = {.cbSize = sizeof(NOTIFYICONDATA),
                          .hWnd = hwnd.get(),
@@ -251,7 +261,7 @@ int MainWithNoWinFSP(HINSTANCE instance) {
                          .szTip = kAppId,
                          .szInfo = kAppId " started without WinFSP",
                          .szInfoTitle = kAppId};
-  CheckSuccess(Shell_NotifyIcon(NIM_ADD, &data), "Shell_NotifyIcon");
+  CheckSuccess(Shell_NotifyIcon(NIM_ADD, &data), TEXT("Shell_NotifyIcon"));
   auto delete_notify_icon_guard =
       AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
@@ -281,7 +291,7 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
       if (GetLastError() == ERROR_FILE_NOT_FOUND) {
         mutex_guard = Create<ReleaseMutex>(CreateMutex(nullptr, 0, kAppId));
       } else {
-        CheckNotNull(mutex, "OpenMutex");
+        CheckNotNull(mutex, TEXT("OpenMutex"));
       }
     } else {
       NOTIFYICONDATA data = {.cbSize = sizeof(NOTIFYICONDATA),
@@ -289,7 +299,8 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
                              .uFlags = NIF_INFO,
                              .szInfo = kAppId " already running",
                              .szInfoTitle = kAppId};
-      CheckSuccess(Shell_NotifyIcon(NIM_MODIFY, &data), "Shell_NotifyIcon");
+      CheckSuccess(Shell_NotifyIcon(NIM_MODIFY, &data),
+                   TEXT("Shell_NotifyIcon"));
       return STATUS_SUCCESS;
     }
 

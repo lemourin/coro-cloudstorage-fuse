@@ -19,8 +19,8 @@ class FileSystemException : public std::exception {
   static std::string GetErrorString(HRESULT r) {
     const int BUFFER_SIZE = 512;
     char buffer[BUFFER_SIZE] = {};
-    FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, r, 0, buffer,
-                  BUFFER_SIZE, nullptr);
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, r, 0, buffer,
+                   BUFFER_SIZE, nullptr);
     return buffer;
   }
 
