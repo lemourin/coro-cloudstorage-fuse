@@ -39,9 +39,7 @@ class WinFspServiceContext {
   WinFspServiceContext& operator=(WinFspServiceContext&&) = delete;
 
  private:
-  using CloudProviderTypeList =
-      coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
-                           PCloud, WebDAV, YandexDisk>;
+  using CloudProviderTypeList = FileSystemContext::CloudProviderTypeList;
 
   struct CloudProviderAccountListener;
 

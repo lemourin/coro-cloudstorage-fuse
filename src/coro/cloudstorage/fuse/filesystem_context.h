@@ -8,6 +8,7 @@
 #include <coro/cloudstorage/providers/box.h>
 #include <coro/cloudstorage/providers/dropbox.h>
 #include <coro/cloudstorage/providers/google_drive.h>
+#include <coro/cloudstorage/providers/hubic.h>
 #include <coro/cloudstorage/providers/mega.h>
 #include <coro/cloudstorage/providers/one_drive.h>
 #include <coro/cloudstorage/providers/pcloud.h>
@@ -45,12 +46,12 @@ using CloudProviderT =
     decltype(CreateCloudProvider<CloudProvider>(std::declval<Factory>()));
 
 class FileSystemContext {
- private:
+ public:
   struct ForwardToMergedCloudProvider;
 
   using CloudProviderTypeList =
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
-                           PCloud, WebDAV, YandexDisk>;
+                           PCloud, WebDAV, YandexDisk, HubiC>;
   using HttpT = http::CacheHttp<http::CurlHttp>;
   using CloudFactoryT =
       CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
@@ -73,7 +74,6 @@ class FileSystemContext {
   static inline constexpr bool kTestCloudProvider = false;
   using TestCloudProviderT = GoogleDrive;
 
- public:
   struct Config {
     int timeout_ms;
     std::optional<std::string> config_path;

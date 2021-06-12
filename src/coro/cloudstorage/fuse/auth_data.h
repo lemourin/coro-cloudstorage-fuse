@@ -5,6 +5,7 @@
 #include <coro/cloudstorage/providers/box.h>
 #include <coro/cloudstorage/providers/dropbox.h>
 #include <coro/cloudstorage/providers/google_drive.h>
+#include <coro/cloudstorage/providers/hubic.h>
 #include <coro/cloudstorage/providers/mega.h>
 #include <coro/cloudstorage/providers/one_drive.h>
 #include <coro/cloudstorage/providers/pcloud.h>
@@ -45,6 +46,12 @@ struct AuthData {
     } else if constexpr (std::is_same_v<CloudProvider, PCloud>) {
       auth_data = {.client_id = "rjR7bUpwgdz",
                    .client_secret = "zNtirCfoYfmX5aFzoavWikKWyMlV"};
+    } else if constexpr (std::is_same_v<CloudProvider, HubiC>) {
+      auth_data = {
+          .client_id = "api_hubic_kHQ5NUmE2yAAeiWfXPwQy2T53M6RP2fe",
+          .client_secret =
+              "Xk1ezMMSGNeU4r0wv3jutleYX9XvXmgg8XVElJjqoDvlDw0KsC9U2tkS"
+              "xJxYof8V"};
     }
     if constexpr (util::HasRedirectUri<decltype(auth_data)>) {
       auth_data.redirect_uri =
