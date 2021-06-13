@@ -2,6 +2,19 @@
 
 namespace coro::cloudstorage::fuse {
 
+namespace {
+
+template <bool TestCloudProvider, typename CloudProviderT>
+auto GetProvider(CloudProviderT* provider) {
+  if constexpr (TestCloudProvider) {
+    return nullptr;
+  } else {
+    return provider->GetProvider();
+  }
+}
+
+}  // namespace
+
 void FileSystemContext::ForwardToMergedCloudProvider::OnCreate(
     CloudProviderAccountT* account) {
   if constexpr (!kTestCloudProvider) {
@@ -30,28 +43,24 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
         if constexpr (kTestCloudProvider) {
           return CreateCloudProvider<TestCloudProviderT>(factory_);
         } else {
-          return CloudProviderT(&event_loop_, config.timeout_ms,
-                                &merged_provider_);
+          return TimingOutCloudProviderT(&event_loop_, config.timeout_ms,
+                                         &merged_provider_);
         }
       }()),
       fs_(&provider_, &event_loop_, &thread_pool_, config.fs_config),
       http_server_(
           event_base,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-          AccountManagerHandlerT(factory_, thumbnail_generator_,
-                                 ForwardToMergedCloudProvider{[&] {
-                                   if constexpr (kTestCloudProvider) {
-                                     return nullptr;
-                                   } else {
-                                     return provider_.GetProvider();
-                                   }
-                                 }()},
-                                 util::AuthTokenManager([&] {
-                                   if (config.config_path) {
-                                     return std::move(*config.config_path);
-                                   } else {
-                                     return util::GetConfigFilePath();
-                                   }
-                                 }()))) {}
+          AccountManagerHandlerT(
+              factory_, thumbnail_generator_,
+              ForwardToMergedCloudProvider{
+                  GetProvider<kTestCloudProvider>(&provider_)},
+              util::AuthTokenManager([&] {
+                if (config.config_path) {
+                  return std::move(*config.config_path);
+                } else {
+                  return util::GetConfigFilePath();
+                }
+              }()))) {}
 
 }  // namespace coro::cloudstorage::fuse

@@ -47,15 +47,18 @@ using CloudProviderT =
 
 class FileSystemContext {
  public:
-  struct ForwardToMergedCloudProvider;
+  using TestCloudProviderT = GoogleDrive;
+  static inline constexpr bool kTestCloudProvider = false;
 
-  using CloudProviderTypeList =
+  using CloudProviderTypeList = std::conditional_t<
+      kTestCloudProvider, coro::util::TypeList<TestCloudProviderT>,
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
-                           PCloud, WebDAV, YandexDisk, HubiC>;
+                           PCloud, WebDAV, YandexDisk, HubiC>>;
   using HttpT = http::CacheHttp<http::CurlHttp>;
   using CloudFactoryT =
       CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
                    util::Muxer, AuthData>;
+  struct ForwardToMergedCloudProvider;
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
                                   util::ThumbnailGenerator,
@@ -71,20 +74,20 @@ class FileSystemContext {
     MergedCloudProviderT* provider;
   };
 
-  static inline constexpr bool kTestCloudProvider = false;
-  using TestCloudProviderT = GoogleDrive;
-
   struct Config {
     int timeout_ms;
     std::optional<std::string> config_path;
     FileSystemProviderConfig fs_config;
   };
 
-  using CloudProviderT = std::conditional_t<
-      kTestCloudProvider,
-      coro::cloudstorage::fuse::CloudProviderT<TestCloudProviderT,
-                                               CloudFactoryT>,
-      util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider>;
+  using TimingOutCloudProviderT =
+      util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider;
+
+  using CloudProviderT =
+      std::conditional_t<kTestCloudProvider,
+                         coro::cloudstorage::fuse::CloudProviderT<
+                             TestCloudProviderT, CloudFactoryT>,
+                         TimingOutCloudProviderT>;
 
   using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
 
