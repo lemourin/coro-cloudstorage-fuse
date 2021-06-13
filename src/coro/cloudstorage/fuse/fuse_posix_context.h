@@ -66,10 +66,12 @@ class FusePosixContext {
  public:
   static Task<std::unique_ptr<FusePosixContext>> Create(
       event_base* event_base, FileSystemProvider* fs, fuse_args* fuse_args,
-      fuse_cmdline_opts* options, fuse_conn_info_opts* conn_opts) {
+      fuse_cmdline_opts* options, fuse_conn_info_opts* conn_opts,
+      stdx::stop_token stop_token) {
     co_return std::unique_ptr<FusePosixContext>(new FusePosixContext(
         event_base, fs, fuse_args, options, conn_opts,
-        FuseFileContext{.context = co_await fs->GetRoot(stdx::stop_token())}));
+        FuseFileContext{.context =
+                            co_await fs->GetRoot(std::move(stop_token))}));
   }
 
   FusePosixContext(const FusePosixContext&) = delete;

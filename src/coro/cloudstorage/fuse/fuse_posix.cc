@@ -36,6 +36,11 @@ struct FreeDeleter {
   }
 };
 
+struct EventContext {
+  stdx::stop_source stop_source;
+  FuseContext* context;
+};
+
 void CheckEvent(int d) {
   if (d != 0) {
     throw std::runtime_error("libevent error");
@@ -43,7 +48,11 @@ void CheckEvent(int d) {
 }
 
 void OnSignal(evutil_socket_t fd, short, void* d) {
-  reinterpret_cast<FuseContext*>(d)->Quit();
+  auto* context = reinterpret_cast<EventContext*>(d);
+  context->stop_source.request_stop();
+  if (context->context) {
+    context->context->Quit();
+  }
 }
 
 Task<int> CoRun(int argc, char** argv, event_base* event_base) {
@@ -70,9 +79,6 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     co_return -1;
   }
   try {
-    FileSystemContext fs_context(event_base);
-    auto context = co_await FuseContext::Create(
-        event_base, &fs_context.fs(), &args, &options, conn_opts.get());
     event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])] =
         {};
     auto scope_guard = AtScopeExit([&] {
@@ -80,12 +86,18 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
         event_del(&event);
       }
     });
+    EventContext event_context{};
     for (size_t i = 0; i < sizeof(kHandledSignals) / sizeof(kHandledSignals[0]);
          i++) {
       CheckEvent(event_assign(&signal_event[i], event_base, kHandledSignals[i],
-                              EV_SIGNAL, OnSignal, context.get()));
+                              EV_SIGNAL, OnSignal, &event_context));
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
+    FileSystemContext fs_context(event_base);
+    auto context = co_await FuseContext::Create(
+        event_base, &fs_context.fs(), &args, &options, conn_opts.get(),
+        event_context.stop_source.get_token());
+    event_context.context = context.get();
     if (fuse_daemonize(options.foreground) != 0) {
       throw std::runtime_error("fuse_daemonize failed");
     }
