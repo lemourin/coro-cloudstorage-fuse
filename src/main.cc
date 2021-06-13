@@ -170,8 +170,10 @@ int MainWithWinFSP(HINSTANCE instance) {
                    reinterpret_cast<LONG_PTR>(&window_data));
   service->UserContext = &window_data;
 
-  auto service_thread =
-      std::async(std::launch::async, FspServiceLoop, service.get());
+  auto service_thread = std::async(std::launch::async, [&] {
+    coro::util::SetThreadName("service-thread");
+    return FspServiceLoop(service.get());
+  });
   auto scope_guard = AtScopeExit([&] { FspServiceStop(service.get()); });
   Check(window_data.initialized.get_future().get(), TEXT("SvcStart"));
 
@@ -218,6 +220,7 @@ Task<> CoRunWithNoWinFSP(WindowData* data, event_base* event_base) {
 int MainWithNoWinFSP(HINSTANCE instance) {
   WindowData window_data{};
   auto service_thread = std::async(std::launch::async, [&] {
+    coro::util::SetThreadName("event-loop");
     evthread_use_windows_threads();
     auto event_loop = Create<event_base_free>(event_base_new());
     coro::Invoke(CoRunWithNoWinFSP(&window_data, event_loop.get()));

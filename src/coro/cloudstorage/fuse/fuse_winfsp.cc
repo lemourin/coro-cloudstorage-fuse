@@ -139,6 +139,7 @@ class WinFspServiceContext {
    private:
     void Main() {
       try {
+        coro::util::SetThreadName("event-loop");
         if (event_base_loop(event_base_, EVLOOP_NO_EXIT_ON_EMPTY) == -1) {
           throw std::runtime_error("event_base_dispatch error");
         }
