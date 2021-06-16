@@ -198,10 +198,10 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
         context->contexts_.emplace_back(
             &p, &context->event_loop_, &context->thread_pool_, nullptr,
             ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
-                                      account->username))
+                                      account->username()))
                 .c_str());
       },
-      account->provider);
+      account->provider());
   std::cerr << "CREATE " << account->GetId() << "\n";
 }
 
@@ -221,7 +221,7 @@ Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
           }
         });
       },
-      account->provider);
+      account->provider());
   std::cerr << "DESTROY " << account->GetId() << "\n";
 }
 
