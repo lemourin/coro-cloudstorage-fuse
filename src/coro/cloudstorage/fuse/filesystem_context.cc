@@ -19,7 +19,7 @@ void FileSystemContext::ForwardToMergedCloudProvider::OnCreate(
     CloudProviderAccountT* account) {
   if constexpr (!kTestCloudProvider) {
     std::visit([&](auto& d) { provider->AddAccount(account->GetId(), &d); },
-               account->provider);
+               account->provider());
   }
 }
 
@@ -27,7 +27,7 @@ Task<> FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
     CloudProviderAccountT* account) {
   if constexpr (!kTestCloudProvider) {
     std::visit([&](auto& d) { provider->RemoveAccount(&d); },
-               account->provider);
+               account->provider());
   }
   co_return;
 }
