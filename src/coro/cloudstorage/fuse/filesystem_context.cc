@@ -35,7 +35,7 @@ Task<> FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
 FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_loop_(event_base),
       thread_pool_(event_loop_),
-      http_(http::CurlHttp(event_base)),
+      http_(coro::http::CacheHttpConfig{}, event_base),
       thumbnail_generator_(&thread_pool_, &event_loop_),
       muxer_(&event_loop_, &thread_pool_),
       factory_(event_loop_, http_, thumbnail_generator_, muxer_),

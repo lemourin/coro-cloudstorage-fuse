@@ -96,7 +96,7 @@ class WinFspServiceContext {
     FileSystemContext(WinFspServiceContext* context)
         : event_loop_(context->event_base_.get()),
           thread_pool_(event_loop_),
-          http_(http::CurlHttp(context->event_base_.get())),
+          http_(http::CacheHttpConfig{}, context->event_base_.get()),
           thumbnail_generator_(&thread_pool_, &event_loop_),
           muxer_(&event_loop_, &thread_pool_),
           factory_(event_loop_, http_, thumbnail_generator_, muxer_),
