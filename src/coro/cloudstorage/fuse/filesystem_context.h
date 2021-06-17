@@ -58,14 +58,12 @@ class FileSystemContext {
   using CloudFactoryT =
       CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
                    util::Muxer, AuthData>;
-  struct ForwardToMergedCloudProvider;
-  using AccountManagerHandlerT =
-      util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
-                                  util::ThumbnailGenerator,
-                                  ForwardToMergedCloudProvider>;
-  using MergedCloudProviderT = util::MergedCloudProvider<
-      AccountManagerHandlerT::CloudProviderAccount::Ts>::CloudProvider;
-  using CloudProviderAccountT = AccountManagerHandlerT::CloudProviderAccount;
+  using CloudProviderAccountT =
+      coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
+                                                     CloudFactoryT>;
+
+  using MergedCloudProviderT =
+      util::MergedCloudProvider<CloudProviderAccountT::Ts>::CloudProvider;
 
   struct ForwardToMergedCloudProvider {
     void OnCreate(CloudProviderAccountT* account);
@@ -73,6 +71,10 @@ class FileSystemContext {
 
     MergedCloudProviderT* provider;
   };
+  using AccountManagerHandlerT =
+      util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
+                                  util::ThumbnailGenerator,
+                                  ForwardToMergedCloudProvider>;
 
   struct Config {
     int timeout_ms;

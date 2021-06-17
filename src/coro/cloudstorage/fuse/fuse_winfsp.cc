@@ -41,17 +41,28 @@ class WinFspServiceContext {
  private:
   using CloudProviderTypeList = FileSystemContext::CloudProviderTypeList;
 
-  struct CloudProviderAccountListener;
+  class FileSystemContext;
 
   using HttpT = http::CacheHttp<http::CurlHttp>;
   using CloudFactoryT =
       CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
                    util::Muxer, AuthData>;
+
+  using CloudProviderAccountT =
+      coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
+                                                     CloudFactoryT>;
+
+  struct CloudProviderAccountListener {
+    void OnCreate(CloudProviderAccountT* account);
+    Task<> OnDestroy(CloudProviderAccountT* account);
+
+    FileSystemContext* context;
+  };
+
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
                                   util::ThumbnailGenerator,
                                   CloudProviderAccountListener>;
-  using CloudProviderAccountT = AccountManagerHandlerT::CloudProviderAccount;
 
   class FileProvider {
    public:
@@ -80,15 +91,6 @@ class WinFspServiceContext {
     WinFspContext<FileSystemProvider<CloudProviderT>> context_;
   };
 
-  class FileSystemContext;
-
-  struct CloudProviderAccountListener {
-    void OnCreate(CloudProviderAccountT* account);
-    Task<> OnDestroy(CloudProviderAccountT* account);
-
-    FileSystemContext* context;
-  };
-
   class FileSystemContext {
    public:
     FileSystemContext(WinFspServiceContext* context)
@@ -101,8 +103,8 @@ class WinFspServiceContext {
           http_server_(
               context->event_base_.get(),
               http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-              AccountManagerHandlerT(factory_, thumbnail_generator_,
-                                     CloudProviderAccountListener{this})) {}
+              factory_, thumbnail_generator_,
+              CloudProviderAccountListener{this}) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
     FileSystemContext(FileSystemContext&&) = delete;

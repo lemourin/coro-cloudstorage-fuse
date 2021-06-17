@@ -51,16 +51,15 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_server_(
           event_base,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-          AccountManagerHandlerT(
-              factory_, thumbnail_generator_,
-              ForwardToMergedCloudProvider{
-                  GetProvider<kTestCloudProvider>(&provider_)},
-              util::AuthTokenManager([&] {
-                if (config.config_path) {
-                  return std::move(*config.config_path);
-                } else {
-                  return util::GetConfigFilePath();
-                }
-              }()))) {}
+          factory_, thumbnail_generator_,
+          ForwardToMergedCloudProvider{
+              GetProvider<kTestCloudProvider>(&provider_)},
+          util::AuthTokenManager([&] {
+            if (config.config_path) {
+              return std::move(*config.config_path);
+            } else {
+              return util::GetConfigFilePath();
+            }
+          }())) {}
 
 }  // namespace coro::cloudstorage::fuse
