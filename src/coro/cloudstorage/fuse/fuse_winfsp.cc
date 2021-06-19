@@ -122,7 +122,7 @@ class WinFspServiceContext {
     coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
     coro::cloudstorage::util::Muxer muxer_;
     CloudFactoryT factory_;
-    std::mutex mutex;
+    std::mutex mutex_;
     std::list<FileProvider> contexts_;
     coro::http::HttpServer<AccountManagerHandlerT> http_server_;
   };
@@ -196,7 +196,7 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
     CloudProviderAccountT* account) {
   std::visit(
       [&]<typename CloudProvider>(CloudProvider& p) {
-        std::unique_lock lock{context->mutex};
+        std::unique_lock lock{context->mutex_};
         context->contexts_.emplace_back(
             &p, &context->event_loop_, &context->thread_pool_, nullptr,
             ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
@@ -212,7 +212,7 @@ Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
   co_await std::visit(
       [&]<typename CloudProvider>(const CloudProvider& p) -> Task<> {
         co_await context->thread_pool_.Invoke([&] {
-          std::unique_lock lock{context->mutex};
+          std::unique_lock lock{context->mutex_};
           auto& contexts = context->contexts_;
           auto it = std::find_if(
               contexts.begin(), contexts.end(), [&](const auto& provider) {
