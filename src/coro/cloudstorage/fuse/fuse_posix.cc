@@ -16,18 +16,11 @@ namespace coro::cloudstorage::fuse {
 namespace {
 
 using ::coro::util::AtScopeExit;
+using ::coro::util::EventBaseDeleter;
 
 using FuseContext = FusePosixContext<FileSystemContext::FileSystemProviderT>;
 
 constexpr int kHandledSignals[] = {SIGINT, SIGTERM};
-
-struct EventBaseDeleter {
-  void operator()(event_base* event_base) const {
-    if (event_base) {
-      event_base_free(event_base);
-    }
-  }
-};
 
 struct FreeDeleter {
   template <typename T>

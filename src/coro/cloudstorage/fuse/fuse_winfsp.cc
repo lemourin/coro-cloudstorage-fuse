@@ -21,6 +21,7 @@ using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::cloudstorage::util::AbstractCloudProvider;
 using ::coro::util::AtScopeExit;
+using ::coro::util::EventBaseDeleter;
 
 class WinFspServiceContext {
  public:
@@ -151,12 +152,6 @@ class WinFspServiceContext {
 
     event_base* event_base_;
     std::future<void> event_loop_thread_;
-  };
-
-  struct EventBaseDeleter {
-    void operator()(event_base* event_base) const {
-      event_base_free(event_base);
-    }
   };
 
   class ContextWrapper : public std::optional<FileSystemContext> {
