@@ -45,9 +45,11 @@ class WinFspServiceContext {
   class FileSystemContext;
 
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using CloudFactoryT =
-      CloudFactory<coro::util::EventLoop, HttpT, util::ThumbnailGenerator,
-                   util::Muxer, AuthData>;
+  using ThumbnailGeneratorT =
+      util::ThumbnailGenerator<coro::util::ThreadPool, coro::util::EventLoop>;
+  using MuxerT = util::Muxer<coro::util::EventLoop, coro::util::ThreadPool>;
+  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
+                                     ThumbnailGeneratorT, MuxerT, AuthData>;
 
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
@@ -62,7 +64,7 @@ class WinFspServiceContext {
 
   using AccountManagerHandlerT =
       util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
-                                  util::ThumbnailGenerator,
+                                  ThumbnailGeneratorT,
                                   CloudProviderAccountListener>;
 
   class FileProvider {
@@ -120,8 +122,8 @@ class WinFspServiceContext {
     coro::util::EventLoop event_loop_;
     coro::util::ThreadPool thread_pool_;
     HttpT http_;
-    coro::cloudstorage::util::ThumbnailGenerator thumbnail_generator_;
-    coro::cloudstorage::util::Muxer muxer_;
+    ThumbnailGeneratorT thumbnail_generator_;
+    MuxerT muxer_;
     CloudFactoryT factory_;
     std::mutex mutex_;
     std::list<FileProvider> contexts_;
