@@ -208,7 +208,7 @@ Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
     CloudProviderAccountT* account) {
   co_await std::visit(
       [&]<typename CloudProvider>(const CloudProvider& p) -> Task<> {
-        co_await context->thread_pool_.Invoke([&] {
+        co_await context->thread_pool_.Do([&] {
           std::unique_lock lock{context->mutex_};
           auto& contexts = context->contexts_;
           auto it = std::find_if(

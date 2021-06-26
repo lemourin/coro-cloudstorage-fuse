@@ -29,7 +29,7 @@ struct Coroutine<F, FuseContext, coro::util::TypeList<fuse_req_t, Args...>> {
   using type = void (*)(fuse_req_t, Args...);
 
   static void Do(fuse_req_t req, Args... args) {
-    coro::Invoke([req, args...]() -> Task<> {
+    coro::RunTask([req, args...]() -> Task<> {
       auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
       if (context->quitting_) {
         fuse_reply_err(req, ECANCELED);

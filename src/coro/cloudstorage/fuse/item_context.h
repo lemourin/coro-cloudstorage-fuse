@@ -146,8 +146,8 @@ Task<> WriteItemContext<
       },
       item);
   FOR_CO_AWAIT(std::string & chunk, std::move(generator)) {
-    if (co_await thread_pool->Invoke(fwrite, chunk.data(), 1, chunk.size(),
-                                     file) != chunk.size()) {
+    if (co_await thread_pool->Do(fwrite, chunk.data(), 1, chunk.size(), file) !=
+        chunk.size()) {
       throw CloudException("write fail");
     }
   }
@@ -226,11 +226,8 @@ std::optional<std::string> ItemContext<CloudProvider>::GetMimeType() const {
   if (!item_ || std::holds_alternative<Directory>(*item_)) {
     return std::nullopt;
   }
-  return std::visit(
-      [](const auto& d) {
-        return CloudProvider::GetMimeType(d);
-      },
-      std::get<File>(*item_));
+  return std::visit([](const auto& d) { return CloudProvider::GetMimeType(d); },
+                    std::get<File>(*item_));
 }
 
 }  // namespace coro::cloudstorage::fuse

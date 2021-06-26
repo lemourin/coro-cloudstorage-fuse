@@ -111,7 +111,7 @@ int Run(int argc, char** argv) {
     return event_base_new();
   }());
   int status = 0;
-  coro::Invoke([&]() -> Task<> {
+  coro::RunTask([&]() -> Task<> {
     status = co_await CoRun(argc, argv, event_base.get());
   });
   if (event_base_dispatch(event_base.get()) != 1) {

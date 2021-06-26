@@ -62,7 +62,7 @@ CurrentStreamingWrite<CloudProvider, Directory>::CurrentStreamingWrite(
       parent_(std::move(parent)),
       size_(size),
       name_(name) {
-  Invoke([&]() -> Task<> {
+  RunTask([&]() -> Task<> {
     try {
       item_promise_.SetValue(co_await CreateFile());
     } catch (...) {

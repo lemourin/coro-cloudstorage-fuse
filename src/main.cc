@@ -223,7 +223,7 @@ int MainWithNoWinFSP(HINSTANCE instance) {
     coro::util::SetThreadName("event-loop");
     evthread_use_windows_threads();
     auto event_loop = Create<event_base_free>(event_base_new());
-    coro::Invoke(CoRunWithNoWinFSP(&window_data, event_loop.get()));
+    coro::RunTask(CoRunWithNoWinFSP(&window_data, event_loop.get()));
     event_base_dispatch(event_loop.get());
     return STATUS_SUCCESS;
   });
