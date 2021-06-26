@@ -1,6 +1,12 @@
 project(coro-cloudstorage-fuse)
 cmake_minimum_required(VERSION 3.17)
 
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" IS_SYSTEM_DIR)
+if("${IS_SYSTEM_DIR}" STREQUAL "-1")
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+endif()
+
 add_subdirectory(contrib/coro-cloudstorage EXCLUDE_FROM_ALL)
 
 if(WIN32)
@@ -65,3 +71,9 @@ if(MSVC)
 endif()
 
 target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")
+
+if(BUILD_SHARED_LIBS)
+    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http coro-util stdx)
+else()
+    install(TARGETS coro-cloudstorage-fuse)
+endif()
