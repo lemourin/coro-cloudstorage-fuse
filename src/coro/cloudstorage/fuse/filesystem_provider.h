@@ -149,6 +149,95 @@ class FileSystemProvider {
     coro::util::ThreadPool* thread_pool;
   };
 
+  struct CreateDirectoryF {
+    template <typename DirectoryT>
+    Task<Directory> operator()(const DirectoryT& d) && {
+      if constexpr (CanCreateDirectory<DirectoryT, CloudProvider>) {
+        co_return co_await provider->CreateDirectory(d, std::string(name),
+                                                     std::move(stop_token));
+      } else {
+        throw CloudException("create directory not supported");
+      }
+    }
+    CloudProvider* provider;
+    std::string name;
+    stdx::stop_token stop_token;
+  };
+
+  struct CreateFileF {
+    template <typename DirectoryT>
+    Task<ItemContextT> operator()(DirectoryT d) && {
+      if constexpr (CanCreateFile<DirectoryT, CloudProvider>) {
+        if (p->config_.buffered_write ||
+            (p->provider_->IsFileContentSizeRequired(d) && !size)) {
+          co_return co_await p->CreateBufferedUpload(parent, name,
+                                                     std::move(stop_token));
+        }
+        ItemContextT context(/*item=*/std::nullopt, d);
+        context.current_streaming_write_ =
+            std::make_unique<CurrentStreamingWriteT<>>(
+                std::in_place_type_t<
+                    CurrentStreamingWrite<CloudProvider, DirectoryT>>{},
+                p->thread_pool_, p->event_loop_, p->provider_, d, size, name);
+        co_return context;
+      } else {
+        throw CloudException("can't create file");
+      }
+    }
+
+    FileSystemProvider* p;
+    const ItemContextT& parent;
+    std::string_view name;
+    std::optional<int64_t> size;
+    stdx::stop_token stop_token;
+  };
+
+  struct RemoveItemF {
+    template <typename ItemT>
+    Task<> operator()(ItemT d) && {
+      if constexpr (CanRemove<ItemT, CloudProvider>) {
+        co_await provider->RemoveItem(d, std::move(stop_token));
+      } else {
+        throw CloudException("remove not supported");
+      }
+    }
+    CloudProvider* provider;
+    stdx::stop_token stop_token;
+  };
+
+  template <typename Item>
+  struct MoveItemF {
+    template <typename SourceT, typename DestinationT>
+    Task<Item> operator()(const SourceT& source,
+                          const DestinationT& destination) && {
+      if constexpr (CanMove<SourceT, DestinationT, CloudProvider>) {
+        co_return co_await provider->MoveItem(source, destination,
+                                              std::move(stop_token));
+      } else {
+        throw CloudException("move not supported");
+      }
+    };
+    CloudProvider* provider;
+    stdx::stop_token stop_token;
+  };
+
+  template <typename ItemT>
+  struct RenameItemF {
+    template <typename Source>
+    Task<ItemT> operator()(Source item) && {
+      if constexpr (CanRename<Source, CloudProvider>) {
+        co_return co_await provider->RenameItem(std::move(item),
+                                                std::move(destination_name),
+                                                std::move(stop_token));
+      } else {
+        throw CloudException("rename not supported");
+      }
+    }
+    CloudProvider* provider;
+    std::string destination_name;
+    stdx::stop_token stop_token;
+  };
+
   CloudProvider* provider_;
   coro::util::EventLoop* event_loop_;
   coro::util::ThreadPool* thread_pool_;
@@ -355,14 +444,8 @@ auto FileSystemProvider<CloudProvider>::Rename(const ItemContextT& item,
   auto ditem = co_await std::visit(
       [&](const auto& d) -> Task<Item> {
         co_return co_await std::visit(
-            [&]<typename ItemT>(const ItemT& d) -> Task<Item> {
-              if constexpr (CanRename<ItemT, CloudProvider>) {
-                co_return co_await provider_->RenameItem(
-                    d, std::string(new_name), std::move(stop_token));
-              } else {
-                throw CloudException("rename not supported");
-              }
-            },
+            RenameItemF<Item>{provider_, std::string(new_name),
+                              std::move(stop_token)},
             d);
       },
       item.item_.value());
@@ -381,17 +464,8 @@ auto FileSystemProvider<CloudProvider>::Move(const ItemContextT& source,
   auto ditem = co_await std::visit(
       [&](const auto& source) -> Task<Item> {
         co_return co_await std::visit(
-            [&]<typename SourceT, typename DestinationT>(
-                const SourceT& source,
-                const DestinationT& destination) -> Task<Item> {
-              if constexpr (CanMove<SourceT, DestinationT, CloudProvider>) {
-                co_return co_await provider_->MoveItem(source, destination,
-                                                       std::move(stop_token));
-              } else {
-                throw CloudException("move not supported");
-              }
-            },
-            source, destination_directory);
+            MoveItemF<Item>{provider_, std::move(stop_token)}, source,
+            destination_directory);
       },
       source.item_.value());
   ItemContextT new_item{std::move(ditem), destination_directory};
@@ -405,14 +479,7 @@ auto FileSystemProvider<CloudProvider>::CreateDirectory(
     stdx::stop_token stop_token) -> Task<ItemContextT> {
   const auto& parent_directory = std::get<Directory>(parent.item_.value());
   auto new_directory = co_await std::visit(
-      [&]<typename DirectoryT>(const DirectoryT& d) -> Task<Item> {
-        if constexpr (CanCreateDirectory<DirectoryT, CloudProvider>) {
-          co_return co_await provider_->CreateDirectory(d, std::string(name),
-                                                        std::move(stop_token));
-        } else {
-          throw CloudException("create directory not supported");
-        }
-      },
+      CreateDirectoryF{provider_, std::string(name), std::move(stop_token)},
       parent_directory);
   co_return ItemContextT{std::move(new_directory), parent_directory};
 }
@@ -421,15 +488,8 @@ template <typename CloudProvider>
 auto FileSystemProvider<CloudProvider>::Remove(const ItemContextT& item,
                                                stdx::stop_token stop_token)
     -> Task<> {
-  co_await std::visit(
-      [&]<typename ItemT>(const ItemT& d) -> Task<> {
-        if constexpr (CanRemove<ItemT, CloudProvider>) {
-          co_await provider_->RemoveItem(d, std::move(stop_token));
-        } else {
-          throw CloudException("remove not supported");
-        }
-      },
-      Convert(item.item_.value()));
+  co_await std::visit(RemoveItemF{provider_, std::move(stop_token)},
+                      Convert(item.item_.value()));
   content_cache_.Invalidate(item.GetId());
 }
 
@@ -440,24 +500,7 @@ auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
                                                stdx::stop_token stop_token)
     -> Task<ItemContextT> {
   co_return co_await std::visit(
-      [&]<typename Directory>(const Directory& d) -> Task<ItemContextT> {
-        if constexpr (CanCreateFile<Directory, CloudProvider>) {
-          if (config_.buffered_write ||
-              (provider_->IsFileContentSizeRequired(d) && !size)) {
-            co_return co_await CreateBufferedUpload(parent, name,
-                                                    std::move(stop_token));
-          }
-          ItemContextT context(/*item=*/std::nullopt, d);
-          context.current_streaming_write_ =
-              std::make_unique<CurrentStreamingWriteT<>>(
-                  std::in_place_type_t<
-                      CurrentStreamingWrite<CloudProvider, Directory>>{},
-                  thread_pool_, event_loop_, provider_, d, size, name);
-          co_return context;
-        } else {
-          throw CloudException("can't create file");
-        }
-      },
+      CreateFileF{this, parent, name, size, std::move(stop_token)},
       std::get<Directory>(parent.item_.value()));
 }
 
