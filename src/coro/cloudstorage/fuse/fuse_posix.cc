@@ -53,7 +53,7 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
   std::unique_ptr<fuse_conn_info_opts, FreeDeleter> conn_opts(
       fuse_parse_conn_info_opts(&args));
-  fuse_cmdline_opts options;
+  fuse_cmdline_opts options{};
   if (fuse_parse_cmdline(&args, &options) != 0) {
     co_return -1;
   }

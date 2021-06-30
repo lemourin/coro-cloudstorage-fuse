@@ -61,7 +61,16 @@ else()
 
     include(FindPkgConfig)
 
-    pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse3)
+    pkg_check_modules(fuse IMPORTED_TARGET fuse3)
+    if(NOT fuse_FOUND)
+        pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse)
+        target_sources(coro-cloudstorage-fuse PRIVATE
+            src/coro/cloudstorage/fuse/fuse_posix_compat.h
+            src/coro/cloudstorage/fuse/fuse_posix_compat.cc
+        )
+        target_compile_definitions(coro-cloudstorage-fuse PRIVATE CORO_CLOUDSTORAGE_FUSE2)
+    endif()
+
     target_link_libraries(coro-cloudstorage-fuse PRIVATE event_pthreads PkgConfig::fuse)
     target_compile_definitions(coro-cloudstorage-fuse PRIVATE FUSE_USE_VERSION=39)
 endif()

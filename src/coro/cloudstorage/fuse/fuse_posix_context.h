@@ -6,6 +6,10 @@
 #include <coro/util/function_traits.h>
 #include <fuse_lowlevel.h>
 
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+#include <coro/cloudstorage/fuse/fuse_posix_compat.h>
+#endif
+
 namespace coro::cloudstorage::fuse {
 
 namespace internal {
@@ -96,8 +100,13 @@ class FusePosixContext {
     for (FuseFileContext* file_context : open_descriptors_) {
       delete file_context;
     }
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+    fuse_unmount(options_->mountpoint, chan_.get());
+    service_thread_.join();
+#else
     fuse_session_unmount(session_.get());
     CheckEvent(event_del(&fuse_event_));
+#endif
   }
 
  private:
@@ -151,11 +160,15 @@ class FusePosixContext {
 
   struct FuseSessionDeleter {
     void operator()(fuse_session* fuse_session) const {
-      if (fuse_session) {
-        fuse_session_destroy(fuse_session);
-      }
+      fuse_session_destroy(fuse_session);
     }
   };
+
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+  struct FuseChanDeleter {
+    void operator()(fuse_chan* chan) const { fuse_session_remove_chan(chan); }
+  };
+#endif
 
   static void Check(int d) {
     if (d != 0) {
@@ -169,6 +182,57 @@ class FusePosixContext {
     }
   }
 
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+  FusePosixContext(event_base* event_base, FileSystemProvider* fs,
+                   fuse_args* args, fuse_cmdline_opts* options,
+                   fuse_conn_info_opts* conn_opts, FuseFileContext root)
+      : file_context_([&] {
+          std::unordered_map<fuse_ino_t, FuseFileContext> map;
+          map.emplace(FUSE_ROOT_ID, std::move(root));
+          return map;
+        }()),
+        fs_(fs),
+        conn_opts_(conn_opts),
+        options_(options),
+        chan_([&] {
+          auto* chan = fuse_mount(options->mountpoint, args);
+          if (!chan) {
+            throw std::runtime_error("fuse_mount failed");
+          }
+          return chan;
+        }()),
+        session_([&] {
+          auto* session = fuse_lowlevel_new(args, &operations_,
+                                            sizeof(fuse_lowlevel_ops), this);
+          if (!session) {
+            throw std::runtime_error("couldn't create fuse_session");
+          }
+          fuse_session_add_chan(session, chan_.get());
+          return session;
+        }()),
+        service_thread_([&, event_loop = coro::util::EventLoop(event_base)] {
+          size_t bufsize = fuse_chan_bufsize(chan_.get());
+          std::unique_ptr<char[]> chunk(new char[bufsize]);
+          while (!fuse_session_exited(session_.get())) {
+            fuse_buf buffer = {.size = bufsize, .mem = chunk.get()};
+            auto* chan = chan_.release();
+            int size = fuse_session_receive_buf(session_.get(), &buffer, &chan);
+            chan_.reset(chan);
+            if (size < 0) {
+              std::cerr << "FATAL ERROR:" << strerror(-size) << "\n";
+              fuse_session_exit(session_.get());
+            } else {
+              event_loop.Do([&] {
+                fuse_session_process_buf(session_.get(), &buffer, chan_.get());
+              });
+            }
+            if (fuse_session_exited(session_.get())) {
+              event_loop.Do([&] { quit_.SetValue(); });
+              return;
+            }
+          }
+        }) {}
+#else
   FusePosixContext(event_base* event_base, FileSystemProvider* fs,
                    fuse_args* args, fuse_cmdline_opts* options,
                    fuse_conn_info_opts* conn_opts, FuseFileContext root)
@@ -176,9 +240,6 @@ class FusePosixContext {
         conn_opts_(conn_opts),
         session_(fuse_session_new(args, &operations_, sizeof(fuse_lowlevel_ops),
                                   this)) {
-    if (!session_) {
-      throw std::runtime_error("couldn't create fuse_session");
-    }
     file_context_.emplace(FUSE_ROOT_ID, std::move(root));
     Check(fuse_session_mount(session_.get(), options->mountpoint));
     CheckEvent(event_assign(&fuse_event_, event_base,
@@ -205,6 +266,7 @@ class FusePosixContext {
       return;
     }
   }
+#endif
 
   static fuse_ino_t CreateNode(FuseContext* context, fuse_ino_t parent,
                                FileContext file_context) {
@@ -247,7 +309,9 @@ class FusePosixContext {
                                                              : S_IFREG) |
         0644;
     stat.st_size = item.GetSize().value_or(0);
+#ifndef __APPLE__
     stat.st_mtim.tv_sec = item.GetTimestamp().value_or(0);
+#endif
     stat.st_ino = ino;
     return stat;
   }
@@ -271,8 +335,10 @@ class FusePosixContext {
   }
 
   static void Init(void* user_data, struct fuse_conn_info* conn) {
+#ifndef CORO_CLOUDSTORAGE_FUSE2
     auto context = reinterpret_cast<FuseContext*>(user_data);
     fuse_apply_conn_info_opts(context->conn_opts_, conn);
+#endif
   }
 
   static void Destroy(void* user_data) {}
@@ -491,8 +557,13 @@ class FusePosixContext {
       fuse_entry.ino = fuse_entry.attr.st_ino;
       fuse_entry.attr_timeout = kMetadataTimeout;
       fuse_entry.entry_timeout = kMetadataTimeout;
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+      auto entry_size =
+          fuse_add_direntry(req, nullptr, 0, name.c_str(), nullptr, 0);
+#else
       auto entry_size =
           fuse_add_direntry_plus(req, nullptr, 0, name.c_str(), nullptr, 0);
+#endif
       if (offset + entry_size < size) {
         context->file_context_[fuse_entry.ino].refcount++;
         ReadDirToken next_token;
@@ -507,9 +578,15 @@ class FusePosixContext {
           next_token = {.page_index = read_dir_token.page_index,
                         .offset = i + 1};
         }
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+        offset += fuse_add_direntry(req, buffer.data() + offset, size - offset,
+                                    name.c_str(), &fuse_entry.attr,
+                                    EncodeReadDirToken(next_token));
+#else
         offset += fuse_add_direntry_plus(
             req, buffer.data() + offset, size - offset, name.c_str(),
             &fuse_entry, EncodeReadDirToken(next_token));
+#endif
       } else {
         break;
       }
@@ -537,7 +614,12 @@ class FusePosixContext {
     fuse_reply_entry(req, &fuse_entry);
   }
 
-  static void Forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+  using nlookup_t = unsigned long;
+#else
+  using nlookup_t = uint64_t;
+#endif
+  static void Forget(fuse_req_t req, fuse_ino_t ino, nlookup_t nlookup) {
     auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
     auto it = context->file_context_.find(ino);
     if (it == context->file_context_.end()) {
@@ -568,9 +650,15 @@ class FusePosixContext {
     fuse_reply_buf(req, data.data(), data.size());
   }
 
-  static Task<> Rename(fuse_req_t req, fuse_ino_t parent,
-                       const char* name_c_str, fuse_ino_t new_parent,
-                       const char* new_name_c_str, unsigned int flags) {
+  static Task<> Rename2(fuse_req_t req, fuse_ino_t parent,
+                        const char* name_c_str, fuse_ino_t new_parent,
+                        const char* new_name_c_str) {
+    return Rename3(req, parent, name_c_str, new_parent, new_name_c_str, 0);
+  }
+
+  static Task<> Rename3(fuse_req_t req, fuse_ino_t parent,
+                        const char* name_c_str, fuse_ino_t new_parent,
+                        const char* new_name_c_str, unsigned int flags) {
     auto context = reinterpret_cast<FuseContext*>(fuse_req_userdata(req));
     auto it_parent = context->file_context_.find(parent);
     if (it_parent == context->file_context_.end()) {
@@ -735,10 +823,21 @@ class FusePosixContext {
       .f_files = std::numeric_limits<fsblkcnt_t>::max(),
       .f_ffree = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode_,
       .f_favail = std::numeric_limits<fsblkcnt_t>::max() - context->next_inode_,
-      .f_fsid = 4444,
-      .f_flag = ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOSUID,
+      .f_fsid = 4444, .f_flag = 0,
       .f_namemax = std::numeric_limits<unsigned long>::max()
     };
+#ifdef ST_NOATIME
+    stat.f_flag |= ST_NOATIME;
+#endif
+#ifdef ST_NODEV
+    stat.f_flag |= ST_NODEV;
+#endif
+#ifdef ST_NODIRATIME
+    stat.f_flag |= ST_NODIRATIME;
+#endif
+#ifdef ST_NOSUID
+    stat.f_flag |= ST_NOSUID;
+#endif
     fuse_reply_statfs(req, &stat);
   }
 
@@ -772,18 +871,36 @@ class FusePosixContext {
                                    .mkdir = CoroutineT<MkDir>,
                                    .unlink = CoroutineT<Unlink>,
                                    .rmdir = CoroutineT<Unlink>,
-                                   .rename = CoroutineT<Rename>,
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+                                   .rename = CoroutineT<Rename2>,
+#else
+                                   .rename = CoroutineT<Rename3>,
+#endif
                                    .open = CoroutineT<Open>,
                                    .read = CoroutineT<Read>,
                                    .write = CoroutineT<Write>,
                                    .release = CoroutineT<Release>,
                                    .opendir = CoroutineT<OpenDir>,
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+                                   .readdir = CoroutineT<ReadDir>,
+#endif
                                    .releasedir = CoroutineT<ReleaseDir>,
                                    .statfs = CoroutineT<StatFs>,
                                    .create = CoroutineT<CreateFile>,
-                                   .readdirplus = CoroutineT<ReadDir>};
+#ifndef CORO_CLOUDSTORAGE_FUSE2
+                                   .readdirplus = CoroutineT<ReadDir>
+#endif
+  };
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+  fuse_cmdline_opts* options_;
+  std::unique_ptr<fuse_chan, FuseChanDeleter> chan_;
+#endif
   std::unique_ptr<fuse_session, FuseSessionDeleter> session_;
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+  std::thread service_thread_;
+#else
   event fuse_event_;
+#endif
 };
 
 }  // namespace coro::cloudstorage::fuse

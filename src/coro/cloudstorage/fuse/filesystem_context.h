@@ -31,10 +31,13 @@ auto CreateCloudProvider(const Factory& factory) {
   using ::coro::cloudstorage::util::AuthToken;
   using ::coro::cloudstorage::util::AuthTokenManager;
 
-  auto token = std::get<AuthToken<CloudProvider>>(
-      AuthTokenManager()
-          .LoadTokenData<coro::util::TypeList<CloudProvider>>()
-          .front());
+  auto token_data =
+      AuthTokenManager().LoadTokenData<coro::util::TypeList<CloudProvider>>();
+  if (token_data.empty()) {
+    throw CloudException(CloudException::Type::kUnauthorized);
+  }
+
+  auto token = std::get<AuthToken<CloudProvider>>(token_data.front());
   return factory.template Create<CloudProvider>(
       token, [id = std::move(token.id)](const auto& new_token) {
         AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
