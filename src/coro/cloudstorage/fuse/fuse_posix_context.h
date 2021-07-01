@@ -219,8 +219,7 @@ class FusePosixContext {
             int size = fuse_session_receive_buf(session_.get(), &buffer, &chan);
             chan_.reset(chan);
             if (size < 0) {
-              std::cerr << "FATAL ERROR:" << strerror(-size) << "\n";
-              fuse_session_exit(session_.get());
+              std::cerr << "FUSE ERROR: " << strerror(-size) << "\n";
             } else {
               event_loop.Do([&] {
                 fuse_session_process_buf(session_.get(), &buffer, chan_.get());
