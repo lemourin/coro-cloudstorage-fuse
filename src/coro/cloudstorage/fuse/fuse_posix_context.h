@@ -211,6 +211,7 @@ class FusePosixContext {
           return session;
         }()),
         service_thread_([&, event_loop = coro::util::EventLoop(event_base)] {
+          coro::util::SetThreadName("service-thread");
           size_t bufsize = fuse_chan_bufsize(chan_.get());
           std::unique_ptr<char[]> chunk(new char[bufsize]);
           while (!fuse_session_exited(session_.get())) {
