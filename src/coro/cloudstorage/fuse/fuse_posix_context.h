@@ -309,7 +309,9 @@ class FusePosixContext {
                                                              : S_IFREG) |
         0644;
     stat.st_size = item.GetSize().value_or(0);
-#ifndef __APPLE__
+#ifdef __APPLE__
+    stat.st_mtimespec.tv_sec = item.GetTimestamp().value_or(0);
+#else
     stat.st_mtim.tv_sec = item.GetTimestamp().value_or(0);
 #endif
     stat.st_ino = ino;
