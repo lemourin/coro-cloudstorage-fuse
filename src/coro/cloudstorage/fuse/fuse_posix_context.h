@@ -409,6 +409,7 @@ class FusePosixContext {
                                           /*size=*/0, stop_source.get_token()),
             stop_source.get_token());
         if (file_context) {
+          file_context->name = it->second.context.GetName();
           file_context->context = FileContext::From(it->second.context);
         }
       } else if (!it->second.context.IsPending()) {
@@ -440,7 +441,8 @@ class FusePosixContext {
     std::unique_ptr<FuseFileContext> file_context(
         new FuseFileContext{.context = FileContext::From(it->second.context),
                             .parent = it->second.parent,
-                            .flags = fi->flags});
+                            .flags = fi->flags,
+                            .name = it->second.context.GetName()});
     fi->fh = reinterpret_cast<uint64_t>(file_context.get());
     if (fuse_reply_open(req, fi) == 0) {
       context->open_descriptors_.insert(file_context.release());
@@ -500,6 +502,7 @@ class FusePosixContext {
                                                      stop_source.get_token());
         auto new_id = new_item.GetId();
         context->inode_.emplace(new_id, ino);
+        it->second.size = new_item.GetSize();
         it->second.context = std::move(new_item);
         it->second.flush->done.SetValue();
       } catch (...) {

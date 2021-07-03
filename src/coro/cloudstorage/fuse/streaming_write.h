@@ -85,7 +85,10 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
   }
   if (provider_->IsFileContentSizeRequired(parent_) &&
       current_offset_ + static_cast<int64_t>(chunk.size()) > size_) {
-    throw CloudException("write past declared size");
+    throw CloudException(util::StrCat("write past declared size ",
+                                      size_.value_or(-1),
+                                      " (current_offset = ", current_offset_,
+                                      ", chunk_size = ", chunk.size(), ")"));
   }
   auto lock = co_await UniqueLock::Create(&write_mutex_);
   if (current_offset_ != offset) {
