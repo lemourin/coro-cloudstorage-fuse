@@ -523,7 +523,17 @@ auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
                                               stdx::stop_token stop_token)
     -> Task<> {
   if constexpr (ItemContextT::kWriteSupported) {
-    if (item.current_write_ && item.current_write_->tmpfile) {
+    if (!item.current_streaming_write_ &&
+        (config_.buffered_write ||
+         std::visit(
+             [&]<typename Directory>(const Directory& p) {
+               if constexpr (CanCreateFile<Directory, CloudProvider>) {
+                 return provider_->IsFileContentSizeRequired(p);
+               } else {
+                 return false;
+               }
+             },
+             item.parent_.value()))) {
       co_return co_await WriteToBufferedUpload(item, chunk, offset,
                                                std::move(stop_token));
     }
