@@ -50,7 +50,7 @@ struct Coroutine<F, FuseContext, coro::util::TypeList<fuse_req_t, Args...>> {
         co_await F(req, args...);
       } catch (const CloudException& e) {
         if (e.type() != CloudException::Type::kNotFound) {
-          std::cerr << "ERROR:  " << e.what() << "\n";
+          std::cerr << "ERROR: " << e.what() << "\n";
         }
         fuse_reply_err(req, ToPosixError(e));
       } catch (const InterruptedException&) {
@@ -254,7 +254,7 @@ class FusePosixContext {
     fuse_buf buffer = {};
     int size = fuse_session_receive_buf(data->session_.get(), &buffer);
     if (size < 0) {
-      std::cerr << "FATAL ERROR:" << strerror(-size) << "\n";
+      std::cerr << "FATAL ERROR: " << strerror(-size) << "\n";
       fuse_session_exit(data->session_.get());
     } else {
       fuse_session_process_buf(data->session_.get(), &buffer);
