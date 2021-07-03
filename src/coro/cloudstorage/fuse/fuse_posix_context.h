@@ -416,10 +416,12 @@ class FusePosixContext {
         fuse_reply_err(req, EINVAL);
         co_return;
       }
+#ifndef __APPLE__
       it->second.size = attr->st_size;
       if (file_context) {
         file_context->size = attr->st_size;
       }
+#endif
     }
     fuse_reply_attr(req, &stat, kMetadataTimeout);
   }
