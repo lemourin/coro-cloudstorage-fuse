@@ -87,16 +87,23 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
     FileSystemContext fs_context(event_base);
-    auto context = co_await FuseContext::Create(
-        event_base, &fs_context.fs(), &args, &options, conn_opts.get(),
-        event_context.stop_source.get_token());
-    event_context.context = context.get();
-    if (fuse_daemonize(options.foreground) != 0) {
-      throw std::runtime_error("fuse_daemonize failed");
+    std::unique_ptr<FuseContext> context;
+    int status = 0;
+    try {
+      context = co_await FuseContext::Create(
+          event_base, &fs_context.fs(), &args, &options, conn_opts.get(),
+          event_context.stop_source.get_token());
+      event_context.context = context.get();
+      if (fuse_daemonize(options.foreground) != 0) {
+        throw std::runtime_error("fuse_daemonize failed");
+      }
+      co_await context->Run();
+    } catch (const std::exception& e) {
+      std::cerr << "EXCEPTION " << e.what() << "\n";
+      status = -1;
     }
-    co_await context->Run();
     co_await fs_context.Quit();
-    co_return 0;
+    co_return status;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
     co_return -1;
