@@ -24,6 +24,7 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/coro/cloudstorage/fuse/item_context.h
     src/coro/cloudstorage/fuse/filesystem_context.h
     src/coro/cloudstorage/fuse/filesystem_context.cc
+    src/coro/cloudstorage/fuse/filesystem_provider.h
 )
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
