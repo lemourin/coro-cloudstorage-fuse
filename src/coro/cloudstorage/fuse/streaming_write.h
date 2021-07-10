@@ -154,6 +154,8 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::CreateFile()
 template <typename CloudProvider, typename Directory>
 auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
     -> Generator<std::string> {
+  auto guard =
+      coro::util::AtScopeExit([&] { current_chunk_.SetValue(std::string()); });
   while (!flushed_) {
     std::string chunk = co_await current_chunk_;
     current_chunk_ = Promise<std::string>();
