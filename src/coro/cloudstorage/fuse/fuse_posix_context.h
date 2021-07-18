@@ -132,10 +132,7 @@ class FusePosixContext {
 
   struct Flush {
     struct Callback {
-      Task<> operator()() const {
-        auto& ref = *done;
-        co_await ref;
-      }
+      Task<> operator()() const { co_await *done; }
       Promise<void>* done;
     };
 
@@ -507,7 +504,8 @@ class FusePosixContext {
         it->second.size = new_item.GetSize();
         it->second.context = std::move(new_item);
         it->second.flush->done.SetValue();
-      } catch (...) {
+      } catch (const std::exception& e) {
+        std::cerr << "FLUSH ERROR: " << e.what() << "\n";
         it->second.flush->done.SetException(std::current_exception());
       }
     }
