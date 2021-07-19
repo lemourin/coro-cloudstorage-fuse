@@ -5,6 +5,7 @@
 #include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/fuse/fuse_winfsp_context.h>
 #include <coro/cloudstorage/util/abstract_cloud_provider.h>
+#include <coro/cloudstorage/util/random_number_generator.h>
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
@@ -49,8 +50,10 @@ class WinFspServiceContext {
   using ThreadPoolT = coro::util::ThreadPool<EventLoopT>;
   using ThumbnailGeneratorT = util::ThumbnailGenerator<ThreadPoolT, EventLoopT>;
   using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
-  using CloudFactoryT =
-      CloudFactory<EventLoopT, HttpT, ThumbnailGeneratorT, MuxerT, AuthData>;
+  using RandomNumberGeneratorT =
+      util::RandomNumberGenerator<std::default_random_engine>;
+  using CloudFactoryT = CloudFactory<EventLoopT, HttpT, ThumbnailGeneratorT,
+                                     MuxerT, RandomNumberGeneratorT, AuthData>;
 
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
@@ -91,23 +94,26 @@ class WinFspServiceContext {
 
     std::unique_ptr<AbstractCloudProvider::CloudProvider> abstract_provider_;
     CloudProviderT provider_;
-    FileSystemProvider<CloudProviderT> fs_provider_;
-    WinFspContext<FileSystemProvider<CloudProviderT>> context_;
+    FileSystemProvider<CloudProviderT, ThreadPoolT, EventLoopT> fs_provider_;
+    WinFspContext<decltype(fs_provider_)> context_;
   };
 
   class FileSystemContext {
    public:
     FileSystemContext(WinFspServiceContext* context)
         : event_loop_(context->event_base_.get()),
-          thread_pool_(event_loop_),
+          thread_pool_(&event_loop_),
           http_(http::CacheHttpConfig{}, context->event_base_.get()),
           thumbnail_generator_(&thread_pool_, &event_loop_),
           muxer_(&event_loop_, &thread_pool_),
-          factory_(event_loop_, http_, thumbnail_generator_, muxer_),
+          random_engine_(std::random_device()()),
+          random_number_generator_(&random_engine_),
+          factory_(&event_loop_, &http_, &thumbnail_generator_, &muxer_,
+                   &random_number_generator_),
           http_server_(
               context->event_base_.get(),
               http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-              factory_, thumbnail_generator_,
+              &factory_, &thumbnail_generator_,
               CloudProviderAccountListener{this}) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
@@ -125,6 +131,8 @@ class WinFspServiceContext {
     HttpT http_;
     ThumbnailGeneratorT thumbnail_generator_;
     MuxerT muxer_;
+    std::default_random_engine random_engine_;
+    RandomNumberGeneratorT random_number_generator_;
     CloudFactoryT factory_;
     std::mutex mutex_;
     std::list<FileProvider> contexts_;
