@@ -29,7 +29,7 @@
 namespace coro::cloudstorage::fuse {
 
 template <typename CloudProvider, typename Factory>
-auto CreateCloudProvider(const Factory& factory) {
+auto CreateCloudProvider(const Factory* factory) {
   using ::coro::cloudstorage::util::AuthToken;
   using ::coro::cloudstorage::util::AuthTokenManager;
 
@@ -40,15 +40,15 @@ auto CreateCloudProvider(const Factory& factory) {
   }
 
   auto token = std::get<AuthToken<CloudProvider>>(token_data.front());
-  return factory.template Create<CloudProvider>(
+  return factory->template Create<CloudProvider>(
       token, [id = std::move(token.id)](const auto& new_token) {
         AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
       });
 }
 
 template <typename CloudProvider, typename Factory>
-using CloudProviderT =
-    decltype(CreateCloudProvider<CloudProvider>(std::declval<Factory>()));
+using CloudProviderT = decltype(CreateCloudProvider<CloudProvider>(
+    static_cast<Factory*>(nullptr)));
 
 class FileSystemContext {
  public:
@@ -61,7 +61,6 @@ class FileSystemContext {
                            PCloud, WebDAV, YandexDisk, HubiC>>;
   using CloudFactoryContextT =
       coro::cloudstorage::util::CloudFactoryContext<AuthData>;
-  using EventLoopT = CloudFactoryContextT::EventLoopT;
   using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
   using ThumbnailGeneratorT = CloudFactoryContextT::ThumbnailGeneratorT;
   using CloudFactoryT = CloudFactoryContextT::CloudFactoryT;
