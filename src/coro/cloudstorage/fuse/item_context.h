@@ -14,8 +14,8 @@ struct CanCreateT : std::bool_constant<CanCreateFile<T, CloudProvider>> {};
 template <typename...>
 class WriteItemContext;
 
-template <typename T, typename ThreadPool, typename EventLoop>
-class WriteItemContext<T, ThreadPool, EventLoop, coro::util::TypeList<>> {
+template <typename T, typename ThreadPool>
+class WriteItemContext<T, ThreadPool, coro::util::TypeList<>> {
  public:
   static inline constexpr bool kWriteSupported = false;
 };
@@ -38,10 +38,8 @@ using ItemContextDirectory = coro::util::FromTypeListT<
     coro::util::FilterT<IsDirectoryT, typename CloudProvider::ItemTypeList,
                         CloudProvider>>;
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop,
-          typename... Ts>
-class WriteItemContext<CloudProvider, ThreadPool, EventLoop,
-                       coro::util::TypeList<Ts...>> {
+template <typename CloudProvider, typename ThreadPool, typename... Ts>
+class WriteItemContext<CloudProvider, ThreadPool, coro::util::TypeList<Ts...>> {
  public:
   static inline constexpr bool kWriteSupported = true;
 
@@ -75,10 +73,10 @@ class WriteItemContext<CloudProvider, ThreadPool, EventLoop,
 
 }  // namespace internal
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+template <typename CloudProvider, typename ThreadPool>
 class ItemContext
     : public internal::WriteItemContext<
-          CloudProvider, ThreadPool, EventLoop,
+          CloudProvider, ThreadPool,
           coro::util::FilterT<internal::CanCreateT,
                               typename CloudProvider::ItemTypeList,
                               CloudProvider>> {
@@ -113,7 +111,7 @@ class ItemContext
   bool IsPending() const { return !item_; }
 
  private:
-  template <typename, typename, typename>
+  template <typename, typename>
   friend class FileSystemProvider;
 
   struct QueuedRead {
@@ -138,10 +136,9 @@ class ItemContext
 
 namespace internal {
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop,
-          typename... Ts>
+template <typename CloudProvider, typename ThreadPool, typename... Ts>
 Task<>
-WriteItemContext<CloudProvider, ThreadPool, EventLoop,
+WriteItemContext<CloudProvider, ThreadPool,
                  coro::util::TypeList<Ts...>>::NewFileRead::operator()() {
   auto generator = std::visit(
       [&](const auto& d) {
@@ -159,9 +156,8 @@ WriteItemContext<CloudProvider, ThreadPool, EventLoop,
 
 }  // namespace internal
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetId() const
-    -> std::string {
+template <typename CloudProvider, typename ThreadPool>
+auto ItemContext<CloudProvider, ThreadPool>::GetId() const -> std::string {
   if (!item_) {
     return "";
   }
@@ -178,8 +174,8 @@ auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetId() const
       *item_);
 }
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetTimestamp() const
+template <typename CloudProvider, typename ThreadPool>
+auto ItemContext<CloudProvider, ThreadPool>::GetTimestamp() const
     -> std::optional<int64_t> {
   if (!item_) {
     return std::nullopt;
@@ -192,8 +188,8 @@ auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetTimestamp() const
       *item_);
 }
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetSize() const
+template <typename CloudProvider, typename ThreadPool>
+auto ItemContext<CloudProvider, ThreadPool>::GetSize() const
     -> std::optional<int64_t> {
   if (!item_) {
     return std::nullopt;
@@ -206,9 +202,8 @@ auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetSize() const
       *item_);
 }
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetType() const
-    -> ItemType {
+template <typename CloudProvider, typename ThreadPool>
+auto ItemContext<CloudProvider, ThreadPool>::GetType() const -> ItemType {
   if (!item_) {
     return ItemType::kFile;
   }
@@ -216,8 +211,8 @@ auto ItemContext<CloudProvider, ThreadPool, EventLoop>::GetType() const
                                                    : ItemType::kFile;
 }
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-std::string ItemContext<CloudProvider, ThreadPool, EventLoop>::GetName() const {
+template <typename CloudProvider, typename ThreadPool>
+std::string ItemContext<CloudProvider, ThreadPool>::GetName() const {
   if (!item_) {
     return "";
   }
@@ -228,9 +223,9 @@ std::string ItemContext<CloudProvider, ThreadPool, EventLoop>::GetName() const {
       *item_);
 }
 
-template <typename CloudProvider, typename ThreadPool, typename EventLoop>
-std::optional<std::string>
-ItemContext<CloudProvider, ThreadPool, EventLoop>::GetMimeType() const {
+template <typename CloudProvider, typename ThreadPool>
+std::optional<std::string> ItemContext<CloudProvider, ThreadPool>::GetMimeType()
+    const {
   if (!item_ || std::holds_alternative<Directory>(*item_)) {
     return std::nullopt;
   }

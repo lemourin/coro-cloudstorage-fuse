@@ -98,8 +98,7 @@ class FileSystemContext {
                              TestCloudProviderT, CloudFactoryT>,
                          TimingOutCloudProviderT>;
 
-  using FileSystemProviderT =
-      FileSystemProvider<CloudProviderT, ThreadPoolT, EventLoopT>;
+  using FileSystemProviderT = FileSystemProvider<CloudProviderT, ThreadPoolT>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
 

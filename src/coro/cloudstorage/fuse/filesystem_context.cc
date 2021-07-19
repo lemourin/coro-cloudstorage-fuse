@@ -42,8 +42,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
                                          config.timeout_ms, &merged_provider_);
         }
       }()),
-      fs_(&provider_, context_.event_loop(), context_.thread_pool(),
-          config.fs_config),
+      fs_(&provider_, context_.thread_pool(), config.fs_config),
       http_server_(
           event_base,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},

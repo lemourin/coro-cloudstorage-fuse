@@ -84,8 +84,7 @@ class WinFspServiceContext {
                   AbstractCloudProvider::CloudProviderImpl<CloudProvider>>(
                   provider)),
           provider_(event_loop, 10000, abstract_provider_.get()),
-          fs_provider_(&provider_, event_loop, thread_pool,
-                       FileSystemProviderConfig()),
+          fs_provider_(&provider_, thread_pool, FileSystemProviderConfig()),
           context_(event_loop, &fs_provider_, mountpoint, prefix) {}
 
     intptr_t GetId() const { return abstract_provider_->GetId(); }
@@ -96,7 +95,7 @@ class WinFspServiceContext {
 
     std::unique_ptr<AbstractCloudProvider::CloudProvider> abstract_provider_;
     CloudProviderT provider_;
-    FileSystemProvider<CloudProviderT, ThreadPoolT, EventLoopT> fs_provider_;
+    FileSystemProvider<CloudProviderT, ThreadPoolT> fs_provider_;
     WinFspContext<decltype(fs_provider_)> context_;
   };
 
