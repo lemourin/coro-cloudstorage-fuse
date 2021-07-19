@@ -38,7 +38,10 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_(coro::http::CacheHttpConfig{}, event_base),
       thumbnail_generator_(&thread_pool_, &event_loop_),
       muxer_(&event_loop_, &thread_pool_),
-      factory_(event_loop_, http_, thumbnail_generator_, muxer_),
+      random_engine_(std::random_device()()),
+      random_number_generator_(&random_engine_),
+      factory_(&event_loop_, &http_, &thumbnail_generator_, &muxer_,
+               &random_number_generator_),
       provider_([&] {
         if constexpr (kTestCloudProvider) {
           return CreateCloudProvider<TestCloudProviderT>(factory_);

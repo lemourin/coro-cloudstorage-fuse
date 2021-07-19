@@ -17,6 +17,7 @@
 #include <coro/cloudstorage/util/account_manager_handler.h>
 #include <coro/cloudstorage/util/merged_cloud_provider.h>
 #include <coro/cloudstorage/util/muxer.h>
+#include <coro/cloudstorage/util/random_number_generator.h>
 #include <coro/cloudstorage/util/thumbnail_generator.h>
 #include <coro/cloudstorage/util/timing_out_cloud_provider.h>
 #include <coro/http/cache_http.h>
@@ -61,8 +62,11 @@ class FileSystemContext {
   using ThumbnailGeneratorT =
       util::ThumbnailGenerator<coro::util::ThreadPool, coro::util::EventLoop>;
   using MuxerT = util::Muxer<coro::util::EventLoop, coro::util::ThreadPool>;
-  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
-                                     ThumbnailGeneratorT, MuxerT, AuthData>;
+  using RandomNumberGeneratorT =
+      util::RandomNumberGenerator<std::default_random_engine>;
+  using CloudFactoryT =
+      CloudFactory<coro::util::EventLoop, HttpT, ThumbnailGeneratorT, MuxerT,
+                   RandomNumberGeneratorT, AuthData>;
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
                                                      CloudFactoryT>;
@@ -111,6 +115,8 @@ class FileSystemContext {
   HttpT http_;
   ThumbnailGeneratorT thumbnail_generator_;
   MuxerT muxer_;
+  std::default_random_engine random_engine_;
+  RandomNumberGeneratorT random_number_generator_;
   CloudFactoryT factory_;
   MergedCloudProviderT merged_provider_;
   CloudProviderT provider_;
