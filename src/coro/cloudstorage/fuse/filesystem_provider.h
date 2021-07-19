@@ -177,8 +177,8 @@ class FileSystemProvider {
         context.current_streaming_write_ =
             std::make_unique<CurrentStreamingWriteT<>>(
                 std::in_place_type_t<CurrentStreamingWrite<
-                    CloudProvider, DirectoryT, ThreadPool, EventLoop>>{},
-                p->thread_pool_, p->event_loop_, p->provider_, d, size, name);
+                    CloudProvider, DirectoryT, ThreadPool>>{},
+                p->thread_pool_, p->provider_, d, size, name);
         co_return context;
       } else {
         throw CloudException("can't create file");
@@ -542,8 +542,8 @@ auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Write(
                 item.current_streaming_write_ =
                     std::make_unique<CurrentStreamingWriteT<>>(
                         std::in_place_type_t<CurrentStreamingWrite<
-                            CloudProvider, Directory, ThreadPool, EventLoop>>{},
-                        thread_pool_, event_loop_, provider_, parent,
+                            CloudProvider, Directory, ThreadPool>>{},
+                        thread_pool_, provider_, parent,
                         /*size=*/std::nullopt, item.GetName());
               } else {
                 throw CloudException("can't write");

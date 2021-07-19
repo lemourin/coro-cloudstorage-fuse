@@ -64,9 +64,8 @@ class WriteItemContext<CloudProvider, ThreadPool, EventLoop,
   };
 
   template <typename T>
-  struct WriteT
-      : std::type_identity<
-            CurrentStreamingWrite<CloudProvider, T, ThreadPool, EventLoop>> {};
+  struct WriteT : std::type_identity<
+                      CurrentStreamingWrite<CloudProvider, T, ThreadPool>> {};
   using CurrentStreamingWriteT = coro::util::FromTypeListT<
       std::variant, coro::util::MapT<WriteT, coro::util::TypeList<Ts...>>>;
 
