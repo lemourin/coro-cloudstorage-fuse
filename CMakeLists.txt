@@ -18,7 +18,6 @@ add_executable(coro-cloudstorage-fuse ${OPTIONS})
 target_sources(coro-cloudstorage-fuse PRIVATE
     src/main.cc
     src/coro/cloudstorage/fuse/sparse_file.h
-    src/coro/cloudstorage/fuse/sparse_file.cc
     src/coro/cloudstorage/fuse/auth_data.h
     src/coro/cloudstorage/fuse/streaming_write.h
     src/coro/cloudstorage/fuse/item_context.h

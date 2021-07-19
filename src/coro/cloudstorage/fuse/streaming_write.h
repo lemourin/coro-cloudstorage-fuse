@@ -7,7 +7,8 @@
 
 namespace coro::cloudstorage {
 
-template <typename CloudProvider, typename Directory>
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
 class CurrentStreamingWrite {
  public:
   using File = typename decltype(std::declval<CloudProvider>().CreateFile(
@@ -15,9 +16,9 @@ class CurrentStreamingWrite {
       std::declval<typename CloudProvider::FileContent>(),
       stdx::stop_token()))::type;
 
-  CurrentStreamingWrite(coro::util::ThreadPool*, coro::util::EventLoop*,
-                        CloudProvider* provider, Directory parent,
-                        std::optional<int64_t> size, std::string_view name);
+  CurrentStreamingWrite(ThreadPool*, EventLoop*, CloudProvider* provider,
+                        Directory parent, std::optional<int64_t> size,
+                        std::string_view name);
   ~CurrentStreamingWrite();
 
   CurrentStreamingWrite(const CurrentStreamingWrite&) = delete;
@@ -34,8 +35,8 @@ class CurrentStreamingWrite {
   Generator<std::string> GetStream();
   Task<File> CreateFile();
 
-  coro::util::ThreadPool* thread_pool_;
-  coro::util::EventLoop* event_loop_;
+  ThreadPool* thread_pool_;
+  EventLoop* event_loop_;
   CloudProvider* provider_;
   Directory parent_;
   std::optional<int64_t> size_;
@@ -51,11 +52,12 @@ class CurrentStreamingWrite {
   stdx::stop_source stop_source_;
 };
 
-template <typename CloudProvider, typename Directory>
-CurrentStreamingWrite<CloudProvider, Directory>::CurrentStreamingWrite(
-    coro::util::ThreadPool* thread_pool, coro::util::EventLoop* event_loop,
-    CloudProvider* provider, Directory parent, std::optional<int64_t> size,
-    std::string_view name)
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+CurrentStreamingWrite<CloudProvider, Directory, ThreadPool, EventLoop>::
+    CurrentStreamingWrite(ThreadPool* thread_pool, EventLoop* event_loop,
+                          CloudProvider* provider, Directory parent,
+                          std::optional<int64_t> size, std::string_view name)
     : thread_pool_(thread_pool),
       event_loop_(event_loop),
       provider_(provider),
@@ -71,14 +73,19 @@ CurrentStreamingWrite<CloudProvider, Directory>::CurrentStreamingWrite(
   });
 }
 
-template <typename CloudProvider, typename Directory>
-CurrentStreamingWrite<CloudProvider, Directory>::~CurrentStreamingWrite() {
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                      EventLoop>::~CurrentStreamingWrite() {
   Interrupt();
 }
 
-template <typename CloudProvider, typename Directory>
-auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
-    std::string_view chunk, int64_t offset, stdx::stop_token stop_token)
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+auto CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                           EventLoop>::Write(std::string_view chunk,
+                                             int64_t offset,
+                                             stdx::stop_token stop_token)
     -> Task<> {
   if (flushed_) {
     throw CloudException("write after flush");
@@ -119,9 +126,11 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Write(
   };
 }
 
-template <typename CloudProvider, typename Directory>
-auto CurrentStreamingWrite<CloudProvider, Directory>::Flush(
-    stdx::stop_token stop_token) -> Task<File> {
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+auto CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                           EventLoop>::Flush(stdx::stop_token stop_token)
+    -> Task<File> {
   if (flushed_) {
     throw CloudException("flush already called");
   }
@@ -131,9 +140,10 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::Flush(
   co_return co_await item_promise_;
 }
 
-template <typename CloudProvider, typename Directory>
-auto CurrentStreamingWrite<CloudProvider, Directory>::CreateFile()
-    -> Task<File> {
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+auto CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                           EventLoop>::CreateFile() -> Task<File> {
   try {
     typename CloudProvider::FileContent content{.data = GetStream()};
     if (size_) {
@@ -151,9 +161,10 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::CreateFile()
   }
 }
 
-template <typename CloudProvider, typename Directory>
-auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
-    -> Generator<std::string> {
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+auto CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                           EventLoop>::GetStream() -> Generator<std::string> {
   auto guard =
       coro::util::AtScopeExit([&] { current_chunk_.SetValue(std::string()); });
   while (!flushed_) {
@@ -168,8 +179,10 @@ auto CurrentStreamingWrite<CloudProvider, Directory>::GetStream()
   }
 }
 
-template <typename CloudProvider, typename Directory>
-void CurrentStreamingWrite<CloudProvider, Directory>::Interrupt() {
+template <typename CloudProvider, typename Directory, typename ThreadPool,
+          typename EventLoop>
+void CurrentStreamingWrite<CloudProvider, Directory, ThreadPool,
+                           EventLoop>::Interrupt() {
   stop_source_.request_stop();
   current_chunk_.SetException(InterruptedException());
 }

@@ -45,11 +45,12 @@ class WinFspServiceContext {
   class FileSystemContext;
 
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using ThumbnailGeneratorT =
-      util::ThumbnailGenerator<coro::util::ThreadPool, coro::util::EventLoop>;
-  using MuxerT = util::Muxer<coro::util::EventLoop, coro::util::ThreadPool>;
-  using CloudFactoryT = CloudFactory<coro::util::EventLoop, HttpT,
-                                     ThumbnailGeneratorT, MuxerT, AuthData>;
+  using EventLoopT = coro::util::EventLoop;
+  using ThreadPoolT = coro::util::ThreadPool<EventLoopT>;
+  using ThumbnailGeneratorT = util::ThumbnailGenerator<ThreadPoolT, EventLoopT>;
+  using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
+  using CloudFactoryT =
+      CloudFactory<EventLoopT, HttpT, ThumbnailGeneratorT, MuxerT, AuthData>;
 
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
@@ -70,8 +71,8 @@ class WinFspServiceContext {
   class FileProvider {
    public:
     template <typename CloudProvider>
-    FileProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
-                 coro::util::ThreadPool* thread_pool, const wchar_t* mountpoint,
+    FileProvider(CloudProvider* provider, EventLoopT* event_loop,
+                 ThreadPoolT* thread_pool, const wchar_t* mountpoint,
                  const wchar_t* prefix)
         : abstract_provider_(
               std::make_unique<
@@ -119,8 +120,8 @@ class WinFspServiceContext {
    private:
     friend struct CloudProviderAccountListener;
 
-    coro::util::EventLoop event_loop_;
-    coro::util::ThreadPool thread_pool_;
+    EventLoopT event_loop_;
+    ThreadPoolT thread_pool_;
     HttpT http_;
     ThumbnailGeneratorT thumbnail_generator_;
     MuxerT muxer_;

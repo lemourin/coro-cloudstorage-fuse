@@ -34,7 +34,7 @@ Task<> FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
 
 FileSystemContext::FileSystemContext(event_base* event_base, Config config)
     : event_loop_(event_base),
-      thread_pool_(event_loop_),
+      thread_pool_(&event_loop_),
       http_(coro::http::CacheHttpConfig{}, event_base),
       thumbnail_generator_(&thread_pool_, &event_loop_),
       muxer_(&event_loop_, &thread_pool_),
@@ -54,7 +54,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       http_server_(
           event_base,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-          factory_, thumbnail_generator_,
+          &factory_, &thumbnail_generator_,
           ForwardToMergedCloudProvider{
               GetProvider<kTestCloudProvider>(&provider_)},
           util::AuthTokenManager([&] {

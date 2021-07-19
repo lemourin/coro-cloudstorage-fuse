@@ -18,17 +18,16 @@ struct FileSystemProviderConfig {
   int cache_size = 16;
 };
 
-template <typename CloudProvider>
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
 class FileSystemProvider {
  public:
-  using ItemContextT = ItemContext<CloudProvider>;
+  using ItemContextT = ItemContext<CloudProvider, ThreadPool, EventLoop>;
   using Item = typename ItemContextT::Item;
   using File = typename ItemContextT::File;
   using Directory = typename ItemContextT::Directory;
 
-  FileSystemProvider(CloudProvider* provider, coro::util::EventLoop* event_loop,
-                     coro::util::ThreadPool* thread_pool,
-                     FileSystemProviderConfig config)
+  FileSystemProvider(CloudProvider* provider, EventLoop* event_loop,
+                     ThreadPool* thread_pool, FileSystemProviderConfig config)
       : provider_(provider),
         event_loop_(event_loop),
         thread_pool_(thread_pool),
@@ -78,6 +77,7 @@ class FileSystemProvider {
   using NewFileRead = typename Context::NewFileRead;
   template <typename Context = ItemContextT>
   using CurrentStreamingWriteT = typename Context::CurrentStreamingWriteT;
+  using SparseFileT = SparseFile<ThreadPool>;
 
   template <typename F>
   static auto Convert(const F& d) {
@@ -142,11 +142,11 @@ class FileSystemProvider {
   }
 
   struct SparseFileFactory {
-    Task<std::shared_ptr<SparseFile>> operator()(const std::string&,
-                                                 stdx::stop_token) const {
-      co_return std::make_shared<SparseFile>(thread_pool);
+    Task<std::shared_ptr<SparseFileT>> operator()(std::string_view,
+                                                  stdx::stop_token) const {
+      co_return std::make_shared<SparseFileT>(thread_pool);
     }
-    coro::util::ThreadPool* thread_pool;
+    ThreadPool* thread_pool;
   };
 
   struct CreateDirectoryF {
@@ -176,8 +176,8 @@ class FileSystemProvider {
         ItemContextT context(/*item=*/std::nullopt, d);
         context.current_streaming_write_ =
             std::make_unique<CurrentStreamingWriteT<>>(
-                std::in_place_type_t<
-                    CurrentStreamingWrite<CloudProvider, DirectoryT>>{},
+                std::in_place_type_t<CurrentStreamingWrite<
+                    CloudProvider, DirectoryT, ThreadPool, EventLoop>>{},
                 p->thread_pool_, p->event_loop_, p->provider_, d, size, name);
         co_return context;
       } else {
@@ -239,8 +239,8 @@ class FileSystemProvider {
   };
 
   CloudProvider* provider_;
-  coro::util::EventLoop* event_loop_;
-  coro::util::ThreadPool* thread_pool_;
+  EventLoop* event_loop_;
+  ThreadPool* thread_pool_;
   mutable coro::util::LRUCache<std::string, SparseFileFactory> content_cache_;
   mutable std::chrono::system_clock::duration time_to_first_byte_sum_ =
       std::chrono::seconds(0);
@@ -251,14 +251,14 @@ class FileSystemProvider {
   FileSystemProviderConfig config_;
 };
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::GetRoot(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::GetRoot(
     stdx::stop_token stop_token) const -> Task<ItemContextT> {
   co_return co_await GetItemContext("/", std::move(stop_token));
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::GetItemContext(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::GetItemContext(
     std::string path, stdx::stop_token stop_token) const -> Task<ItemContextT> {
   auto item = Convert(co_await provider_->GetItemByPath(path, stop_token));
   std::optional<Directory> parent;
@@ -270,10 +270,11 @@ auto FileSystemProvider<CloudProvider>::GetItemContext(
   co_return ItemContextT(std::move(item), std::move(parent));
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::ReadDirectoryPage(
-    const ItemContextT& context, std::optional<std::string> page_token,
-    stdx::stop_token stop_token) const -> Task<PageData> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::
+    ReadDirectoryPage(const ItemContextT& context,
+                      std::optional<std::string> page_token,
+                      stdx::stop_token stop_token) const -> Task<PageData> {
   co_return co_await std::visit(
       [&](const auto& d) -> Task<PageData> {
         auto page_data = co_await provider_->ListDirectoryPage(
@@ -288,8 +289,8 @@ auto FileSystemProvider<CloudProvider>::ReadDirectoryPage(
       std::get<Directory>(context.item_.value()));
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::ReadDirectory(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::ReadDirectory(
     const ItemContextT& context, stdx::stop_token stop_token) const
     -> Generator<std::vector<ItemContextT>> {
   std::optional<std::string> page_token;
@@ -301,8 +302,8 @@ auto FileSystemProvider<CloudProvider>::ReadDirectory(
   } while (page_token);
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::GetVolumeData(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::GetVolumeData(
     stdx::stop_token stop_token) const -> Task<VolumeData> {
   auto data = co_await provider_->GetGeneralData(std::move(stop_token));
   if constexpr (HasUsageData<decltype(data)>) {
@@ -313,11 +314,10 @@ auto FileSystemProvider<CloudProvider>::GetVolumeData(
   }
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
-                                             int64_t offset, int64_t size,
-                                             stdx::stop_token stop_token) const
-    -> Task<std::string> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Read(
+    const ItemContextT& context, int64_t offset, int64_t size,
+    stdx::stop_token stop_token) const -> Task<std::string> {
   using ::coro::util::AtScopeExit;
 
   auto item_size = context.GetSize();
@@ -436,11 +436,10 @@ auto FileSystemProvider<CloudProvider>::Read(const ItemContextT& context,
   co_return chunk;
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Rename(const ItemContextT& item,
-                                               std::string_view new_name,
-                                               stdx::stop_token stop_token)
-    -> Task<ItemContextT> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Rename(
+    const ItemContextT& item, std::string_view new_name,
+    stdx::stop_token stop_token) -> Task<ItemContextT> {
   auto ditem = co_await std::visit(
       [&](const auto& d) -> Task<Item> {
         co_return co_await std::visit(
@@ -454,11 +453,10 @@ auto FileSystemProvider<CloudProvider>::Rename(const ItemContextT& item,
   co_return new_item;
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Move(const ItemContextT& source,
-                                             const ItemContextT& destination,
-                                             stdx::stop_token stop_token)
-    -> Task<ItemContextT> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Move(
+    const ItemContextT& source, const ItemContextT& destination,
+    stdx::stop_token stop_token) -> Task<ItemContextT> {
   const auto& destination_directory =
       std::get<Directory>(destination.item_.value());
   auto ditem = co_await std::visit(
@@ -473,8 +471,8 @@ auto FileSystemProvider<CloudProvider>::Move(const ItemContextT& source,
   co_return new_item;
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::CreateDirectory(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::CreateDirectory(
     const ItemContextT& parent, std::string_view name,
     stdx::stop_token stop_token) -> Task<ItemContextT> {
   const auto& parent_directory = std::get<Directory>(parent.item_.value());
@@ -484,30 +482,28 @@ auto FileSystemProvider<CloudProvider>::CreateDirectory(
   co_return ItemContextT{std::move(new_directory), parent_directory};
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Remove(const ItemContextT& item,
-                                               stdx::stop_token stop_token)
-    -> Task<> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Remove(
+    const ItemContextT& item, stdx::stop_token stop_token) -> Task<> {
   co_await std::visit(RemoveItemF{provider_, std::move(stop_token)},
                       Convert(item.item_.value()));
   content_cache_.Invalidate(item.GetId());
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Create(const ItemContextT& parent,
-                                               std::string_view name,
-                                               std::optional<int64_t> size,
-                                               stdx::stop_token stop_token)
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Create(
+    const ItemContextT& parent, std::string_view name,
+    std::optional<int64_t> size, stdx::stop_token stop_token)
     -> Task<ItemContextT> {
   co_return co_await std::visit(
       CreateFileF{this, parent, name, size, std::move(stop_token)},
       std::get<Directory>(parent.item_.value()));
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::CreateBufferedUpload(
-    const ItemContextT& parent, std::string_view name, stdx::stop_token) const
-    -> Task<ItemContextT> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::
+    CreateBufferedUpload(const ItemContextT& parent, std::string_view name,
+                         stdx::stop_token) const -> Task<ItemContextT> {
   ItemContextT result{/*item=*/std::nullopt,
                       std::get<Directory>(parent.item_.value())};
   result.current_write_ = CurrentWrite<>{.tmpfile = util::CreateTmpFile(),
@@ -516,12 +512,10 @@ auto FileSystemProvider<CloudProvider>::CreateBufferedUpload(
   co_return result;
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
-                                              std::string_view chunk,
-                                              int64_t offset,
-                                              stdx::stop_token stop_token)
-    -> Task<> {
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Write(
+    const ItemContextT& item, std::string_view chunk, int64_t offset,
+    stdx::stop_token stop_token) -> Task<> {
   if constexpr (ItemContextT::kWriteSupported) {
     if (!item.current_streaming_write_ &&
         (config_.buffered_write ||
@@ -547,8 +541,8 @@ auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
               if constexpr (CanCreateFile<Directory, CloudProvider>) {
                 item.current_streaming_write_ =
                     std::make_unique<CurrentStreamingWriteT<>>(
-                        std::in_place_type_t<
-                            CurrentStreamingWrite<CloudProvider, Directory>>{},
+                        std::in_place_type_t<CurrentStreamingWrite<
+                            CloudProvider, Directory, ThreadPool, EventLoop>>{},
                         thread_pool_, event_loop_, provider_, parent,
                         /*size=*/std::nullopt, item.GetName());
               } else {
@@ -570,9 +564,9 @@ auto FileSystemProvider<CloudProvider>::Write(const ItemContextT& item,
   }
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::Flush(const ItemContextT& item,
-                                              stdx::stop_token stop_token)
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::Flush(
+    const ItemContextT& item, stdx::stop_token stop_token)
     -> Task<ItemContextT> {
   if constexpr (ItemContextT::kWriteSupported) {
     if (item.current_write_ && item.current_write_->tmpfile) {
@@ -592,8 +586,9 @@ auto FileSystemProvider<CloudProvider>::Flush(const ItemContextT& item,
   }
 }
 
-template <typename CloudProvider>
-Task<> FileSystemProvider<CloudProvider>::WriteToBufferedUpload(
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+Task<>
+FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::WriteToBufferedUpload(
     const ItemContextT& context, std::string_view chunk, int64_t offset,
     stdx::stop_token stop_token) const {
   if (!context.current_write_) {
@@ -620,9 +615,10 @@ Task<> FileSystemProvider<CloudProvider>::WriteToBufferedUpload(
                            chunk);
 }
 
-template <typename CloudProvider>
-auto FileSystemProvider<CloudProvider>::FlushBufferedUpload(
-    const ItemContextT& context, stdx::stop_token stop_token) const
+template <typename CloudProvider, typename ThreadPool, typename EventLoop>
+auto FileSystemProvider<CloudProvider, ThreadPool, EventLoop>::
+    FlushBufferedUpload(const ItemContextT& context,
+                        stdx::stop_token stop_token) const
     -> Task<ItemContextT> {
   if (!context.current_write_) {
     throw CloudException("invalid flush");

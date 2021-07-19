@@ -59,9 +59,10 @@ class FileSystemContext {
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
                            PCloud, WebDAV, YandexDisk, HubiC>>;
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using ThumbnailGeneratorT =
-      util::ThumbnailGenerator<coro::util::ThreadPool, coro::util::EventLoop>;
-  using MuxerT = util::Muxer<coro::util::EventLoop, coro::util::ThreadPool>;
+  using EventLoopT = coro::util::EventLoop;
+  using ThreadPoolT = coro::util::ThreadPool<EventLoopT>;
+  using ThumbnailGeneratorT = util::ThumbnailGenerator<ThreadPoolT, EventLoopT>;
+  using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
   using RandomNumberGeneratorT =
       util::RandomNumberGenerator<std::default_random_engine>;
   using CloudFactoryT =
@@ -100,7 +101,8 @@ class FileSystemContext {
                              TestCloudProviderT, CloudFactoryT>,
                          TimingOutCloudProviderT>;
 
-  using FileSystemProviderT = FileSystemProvider<CloudProviderT>;
+  using FileSystemProviderT =
+      FileSystemProvider<CloudProviderT, ThreadPoolT, EventLoopT>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
 
@@ -110,8 +112,8 @@ class FileSystemContext {
   Task<> Quit() { return http_server_.Quit(); }
 
  private:
-  coro::util::EventLoop event_loop_;
-  coro::util::ThreadPool thread_pool_;
+  EventLoopT event_loop_;
+  ThreadPoolT thread_pool_;
   HttpT http_;
   ThumbnailGeneratorT thumbnail_generator_;
   MuxerT muxer_;
