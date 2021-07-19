@@ -15,6 +15,7 @@
 #include <coro/cloudstorage/providers/webdav.h>
 #include <coro/cloudstorage/providers/yandex_disk.h>
 #include <coro/cloudstorage/util/account_manager_handler.h>
+#include <coro/cloudstorage/util/cloud_factory_context.h>
 #include <coro/cloudstorage/util/merged_cloud_provider.h>
 #include <coro/cloudstorage/util/muxer.h>
 #include <coro/cloudstorage/util/random_number_generator.h>
@@ -58,16 +59,12 @@ class FileSystemContext {
       kTestCloudProvider, coro::util::TypeList<TestCloudProviderT>,
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
                            PCloud, WebDAV, YandexDisk, HubiC>>;
-  using HttpT = http::CacheHttp<http::CurlHttp>;
-  using EventLoopT = coro::util::EventLoop;
-  using ThreadPoolT = coro::util::ThreadPool<EventLoopT>;
-  using ThumbnailGeneratorT = util::ThumbnailGenerator<ThreadPoolT, EventLoopT>;
-  using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
-  using RandomNumberGeneratorT =
-      util::RandomNumberGenerator<std::default_random_engine>;
-  using CloudFactoryT =
-      CloudFactory<coro::util::EventLoop, HttpT, ThumbnailGeneratorT, MuxerT,
-                   RandomNumberGeneratorT, AuthData>;
+  using CloudFactoryContextT =
+      coro::cloudstorage::util::CloudFactoryContext<AuthData>;
+  using EventLoopT = CloudFactoryContextT::EventLoopT;
+  using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
+  using ThumbnailGeneratorT = CloudFactoryContextT::ThumbnailGeneratorT;
+  using CloudFactoryT = CloudFactoryContextT::CloudFactoryT;
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
                                                      CloudFactoryT>;
@@ -112,14 +109,7 @@ class FileSystemContext {
   Task<> Quit() { return http_server_.Quit(); }
 
  private:
-  EventLoopT event_loop_;
-  ThreadPoolT thread_pool_;
-  HttpT http_;
-  ThumbnailGeneratorT thumbnail_generator_;
-  MuxerT muxer_;
-  std::default_random_engine random_engine_;
-  RandomNumberGeneratorT random_number_generator_;
-  CloudFactoryT factory_;
+  CloudFactoryContextT context_;
   MergedCloudProviderT merged_provider_;
   CloudProviderT provider_;
   FileSystemProviderT fs_;

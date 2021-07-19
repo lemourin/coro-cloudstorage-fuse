@@ -33,28 +33,21 @@ Task<> FileSystemContext::ForwardToMergedCloudProvider::OnDestroy(
 }
 
 FileSystemContext::FileSystemContext(event_base* event_base, Config config)
-    : event_loop_(event_base),
-      thread_pool_(&event_loop_),
-      http_(coro::http::CacheHttpConfig{}, event_base),
-      thumbnail_generator_(&thread_pool_, &event_loop_),
-      muxer_(&event_loop_, &thread_pool_),
-      random_engine_(std::random_device()()),
-      random_number_generator_(&random_engine_),
-      factory_(&event_loop_, &http_, &thumbnail_generator_, &muxer_,
-               &random_number_generator_),
+    : context_(event_base),
       provider_([&] {
         if constexpr (kTestCloudProvider) {
-          return CreateCloudProvider<TestCloudProviderT>(factory_);
+          return CreateCloudProvider<TestCloudProviderT>(context_.factory());
         } else {
-          return TimingOutCloudProviderT(&event_loop_, config.timeout_ms,
-                                         &merged_provider_);
+          return TimingOutCloudProviderT(context_.event_loop(),
+                                         config.timeout_ms, &merged_provider_);
         }
       }()),
-      fs_(&provider_, &event_loop_, &thread_pool_, config.fs_config),
+      fs_(&provider_, context_.event_loop(), context_.thread_pool(),
+          config.fs_config),
       http_server_(
           event_base,
           http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-          &factory_, &thumbnail_generator_,
+          context_.factory(), context_.thumbnail_generator(),
           ForwardToMergedCloudProvider{
               GetProvider<kTestCloudProvider>(&provider_)},
           util::AuthTokenManager([&] {

@@ -5,6 +5,7 @@
 #include <coro/cloudstorage/fuse/filesystem_provider.h>
 #include <coro/cloudstorage/fuse/fuse_winfsp_context.h>
 #include <coro/cloudstorage/util/abstract_cloud_provider.h>
+#include <coro/cloudstorage/util/cloud_factory_context.h>
 #include <coro/cloudstorage/util/random_number_generator.h>
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
@@ -21,6 +22,7 @@ namespace {
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::cloudstorage::util::AbstractCloudProvider;
+using ::coro::cloudstorage::util::CloudFactoryContext;
 using ::coro::util::AtScopeExit;
 using ::coro::util::EventBaseDeleter;
 
@@ -100,20 +102,16 @@ class WinFspServiceContext {
 
   class FileSystemContext {
    public:
+    using CloudFactoryContextT = CloudFactoryContext<AuthData>;
+    using EventLoopT = CloudFactoryContextT::EventLoopT;
+    using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
+
     FileSystemContext(WinFspServiceContext* context)
-        : event_loop_(context->event_base_.get()),
-          thread_pool_(&event_loop_),
-          http_(http::CacheHttpConfig{}, context->event_base_.get()),
-          thumbnail_generator_(&thread_pool_, &event_loop_),
-          muxer_(&event_loop_, &thread_pool_),
-          random_engine_(std::random_device()()),
-          random_number_generator_(&random_engine_),
-          factory_(&event_loop_, &http_, &thumbnail_generator_, &muxer_,
-                   &random_number_generator_),
+        : context_(context->event_base_.get()),
           http_server_(
               context->event_base_.get(),
               http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
-              &factory_, &thumbnail_generator_,
+              context_.factory(), context_.thumbnail_generator(),
               CloudProviderAccountListener{this}) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
@@ -121,19 +119,15 @@ class WinFspServiceContext {
     FileSystemContext& operator=(const FileSystemContext&) = delete;
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
+    ThreadPoolT* thread_pool() { return context_.thread_pool(); }
+    EventLoopT* event_loop() { return context_.event_loop(); }
+
     Task<> Quit() { return http_server_.Quit(); }
 
    private:
     friend struct CloudProviderAccountListener;
 
-    EventLoopT event_loop_;
-    ThreadPoolT thread_pool_;
-    HttpT http_;
-    ThumbnailGeneratorT thumbnail_generator_;
-    MuxerT muxer_;
-    std::default_random_engine random_engine_;
-    RandomNumberGeneratorT random_number_generator_;
-    CloudFactoryT factory_;
+    CloudFactoryContext<AuthData> context_;
     std::mutex mutex_;
     std::list<FileProvider> contexts_;
     coro::http::HttpServer<AccountManagerHandlerT> http_server_;
@@ -204,7 +198,7 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
       [&]<typename CloudProvider>(CloudProvider& p) {
         std::unique_lock lock{context->mutex_};
         context->contexts_.emplace_back(
-            &p, &context->event_loop_, &context->thread_pool_, nullptr,
+            &p, context->event_loop(), context->thread_pool(), nullptr,
             ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
                                       account->username()))
                 .c_str());
@@ -217,7 +211,7 @@ Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
     CloudProviderAccountT* account) {
   co_await std::visit(
       [&]<typename CloudProvider>(const CloudProvider& p) -> Task<> {
-        co_await context->thread_pool_.Do([&] {
+        co_await context->thread_pool()->Do([&] {
           std::unique_lock lock{context->mutex_};
           auto& contexts = context->contexts_;
           auto it = std::find_if(
