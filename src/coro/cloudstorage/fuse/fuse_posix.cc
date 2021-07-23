@@ -59,6 +59,11 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
   }
   auto options_guard = AtScopeExit([&] { free(options.mountpoint); });
   if (options.show_help) {
+    std::cerr << "Please visit http://localhost:12345 to add accounts while "
+                 "the program is running."
+              << std::endl
+              << std::endl;
+    std::cerr << "Options for libfuse:" << std::endl;
     fuse_cmdline_help();
     fuse_lib_help(&args);
     co_return 0;
