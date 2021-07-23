@@ -233,10 +233,14 @@ class FusePosixContext {
   FusePosixContext(event_base* event_base, FileSystemProvider* fs,
                    fuse_args* args, fuse_cmdline_opts* options,
                    fuse_conn_info_opts* conn_opts, FuseFileContext root)
-      : fs_(fs),
-        conn_opts_(conn_opts),
-        session_(fuse_session_new(args, &operations_, sizeof(fuse_lowlevel_ops),
-                                  this)) {
+      : fs_(fs), conn_opts_(conn_opts), session_([&] {
+          auto* session = fuse_session_new(args, &operations_,
+                                           sizeof(fuse_lowlevel_ops), this);
+          if (!session) {
+            throw std::runtime_error("fuse_session_new failed");
+          }
+          return session;
+        }()) {
     file_context_.emplace(FUSE_ROOT_ID, std::move(root));
     Check(fuse_session_mount(session_.get(), options->mountpoint));
     CheckEvent(event_assign(&fuse_event_, event_base,
