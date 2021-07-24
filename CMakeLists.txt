@@ -82,7 +82,7 @@ endif()
 target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")
 
 if(BUILD_SHARED_LIBS)
-    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http coro-util stdx)
+    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http coro-util stdx coro)
 else()
     install(TARGETS coro-cloudstorage-fuse)
 endif()
