@@ -1,5 +1,5 @@
-project(coro-cloudstorage-fuse)
 cmake_minimum_required(VERSION 3.17)
+project(coro-cloudstorage-fuse)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" IS_SYSTEM_DIR)
