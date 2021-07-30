@@ -1,6 +1,7 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_CONTEXT_H
 #define CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_CONTEXT_H
 
+#include <coro/cloudstorage/util/string_utils.h>
 #include <coro/promise.h>
 #include <coro/task.h>
 #include <coro/util/function_traits.h>
@@ -169,7 +170,7 @@ class FusePosixContext {
 
   static void Check(int d) {
     if (d != 0) {
-      throw std::runtime_error(strerror(d));
+      throw std::runtime_error(util::ErrorToString(d));
     }
   }
 
@@ -217,7 +218,7 @@ class FusePosixContext {
             int size = fuse_session_receive_buf(session_.get(), &buffer, &chan);
             chan_.reset(chan);
             if (size < 0) {
-              std::cerr << "FUSE ERROR: " << strerror(-size) << "\n";
+              std::cerr << "FUSE ERROR: " << util::ErrorToString(-size) << "\n";
             } else {
               event_loop.Do([&] {
                 fuse_session_process_buf(session_.get(), &buffer, chan_.get());
@@ -255,7 +256,7 @@ class FusePosixContext {
     fuse_buf buffer = {};
     int size = fuse_session_receive_buf(data->session_.get(), &buffer);
     if (size < 0) {
-      std::cerr << "FATAL ERROR: " << strerror(-size) << "\n";
+      std::cerr << "FATAL ERROR: " << util::ErrorToString(-size) << "\n";
       fuse_session_exit(data->session_.get());
     } else {
       fuse_session_process_buf(data->session_.get(), &buffer);
