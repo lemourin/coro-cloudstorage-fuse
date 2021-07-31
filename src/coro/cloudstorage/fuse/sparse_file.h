@@ -1,12 +1,12 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_SPARSE_FILE_H
 #define CORO_CLOUDSTORAGE_FUSE_SPARSE_FILE_H
 
-#include <coro/cloudstorage/util/file_utils.h>
-#include <coro/mutex.h>
-#include <coro/task.h>
-#include <coro/util/thread_pool.h>
-
 #include <set>
+
+#include "coro/cloudstorage/util/file_utils.h"
+#include "coro/mutex.h"
+#include "coro/task.h"
+#include "coro/util/thread_pool.h"
 
 namespace coro::cloudstorage {
 
@@ -66,7 +66,8 @@ class SparseFile {
     }
     if (IsInside(Range{.offset = offset, .size = size}, *std::prev(it))) {
       auto lock = co_await UniqueLock::Create(&mutex_);
-      co_return co_await util::ReadFile(thread_pool_, file_.get(), offset, size);
+      co_return co_await util::ReadFile(thread_pool_, file_.get(), offset,
+                                        size);
     } else {
       co_return std::nullopt;
     }

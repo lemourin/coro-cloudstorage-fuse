@@ -1,33 +1,16 @@
-#include <coro/util/raii_utils.h>
+#ifdef WIN32
 
-#include <csignal>
+#include <coro/cloudstorage/fuse/filesystem_context.h>
+#include <coro/cloudstorage/fuse/fuse_winfsp.h>
+#include <coro/util/raii_utils.h>
+#include <event2/event.h>
+#include <event2/thread.h>
+
 #include <future>
 #include <iostream>
 #include <sstream>
 
 using ::coro::util::AtScopeExit;
-
-template <auto FreeFunc>
-struct Deleter {
-  template <typename T>
-  void operator()(T* d) const {
-    if (d) {
-      FreeFunc(d);
-    }
-  }
-};
-
-template <auto FreeFunc, typename T>
-auto Create(T* d) {
-  return std::unique_ptr<T, Deleter<FreeFunc>>(d);
-}
-
-#ifdef WIN32
-
-#include <coro/cloudstorage/fuse/filesystem_context.h>
-#include <coro/cloudstorage/fuse/fuse_winfsp.h>
-#include <event2/event.h>
-#include <event2/thread.h>
 
 #define kAppId TEXT("cloudstorage-fuse")
 
@@ -44,6 +27,21 @@ using tstringstream = std::wstringstream;
 using tstring = std::string;
 using tstringstream = std::stringstream;
 #endif
+
+template <auto FreeFunc>
+struct Deleter {
+  template <typename T>
+  void operator()(T* d) const {
+    if (d) {
+      FreeFunc(d);
+    }
+  }
+};
+
+template <auto FreeFunc, typename T>
+auto Create(T* d) {
+  return std::unique_ptr<T, Deleter<FreeFunc>>(d);
+}
 
 struct DebugStream : std::streambuf {
   int_type overflow(int_type c) override {
@@ -327,8 +325,10 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
 
 #include <coro/cloudstorage/fuse/fuse_posix.h>
 
+#include <csignal>
+
 int main(int argc, char** argv) {
-  signal(SIGPIPE, SIG_IGN);
+  signal(SIGPIPE, SIG_IGN);  // NOLINT
 
   return coro::cloudstorage::fuse::Run(argc, argv);
 }

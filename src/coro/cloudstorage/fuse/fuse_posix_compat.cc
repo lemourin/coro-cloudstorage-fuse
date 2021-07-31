@@ -1,4 +1,4 @@
-#include "fuse_posix_compat.h"
+#include "coro/cloudstorage/fuse/fuse_posix_compat.h"
 
 namespace coro::cloudstorage::fuse {
 

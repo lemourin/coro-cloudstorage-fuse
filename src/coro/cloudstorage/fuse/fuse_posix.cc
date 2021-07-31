@@ -1,15 +1,17 @@
-#include "fuse_posix.h"
+#include "coro/cloudstorage/fuse/fuse_posix.h"
 
-#include <coro/cloudstorage/fuse/filesystem_context.h>
-#include <coro/cloudstorage/fuse/filesystem_provider.h>
-#include <coro/cloudstorage/fuse/fuse_posix_context.h>
-#include <coro/util/raii_utils.h>
 #include <event2/thread.h>
 #include <fuse.h>
 #include <fuse_lowlevel.h>
 
 #include <csignal>
 #include <iostream>
+#include <memory>
+
+#include "coro/cloudstorage/fuse/filesystem_context.h"
+#include "coro/cloudstorage/fuse/filesystem_provider.h"
+#include "coro/cloudstorage/fuse/fuse_posix_context.h"
+#include "coro/util/raii_utils.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -20,12 +22,12 @@ using ::coro::util::EventBaseDeleter;
 
 using FuseContext = FusePosixContext<FileSystemContext::FileSystemProviderT>;
 
-constexpr int kHandledSignals[] = {SIGINT, SIGTERM};
+constexpr std::array<int, 2> kHandledSignals = {SIGINT, SIGTERM};
 
 struct FreeDeleter {
   template <typename T>
   void operator()(T* d) const {
-    free(d);
+    free(d);  // NOLINT
   }
 };
 
@@ -40,7 +42,7 @@ void CheckEvent(int d) {
   }
 }
 
-void OnSignal(evutil_socket_t fd, short, void* d) {
+void OnSignal(evutil_socket_t, short, void* d) {
   auto* context = reinterpret_cast<EventContext*>(d);
   context->stop_source.request_stop();
   if (context->context) {
@@ -57,7 +59,9 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
   if (fuse_parse_cmdline(&args, &options) != 0) {
     co_return -1;
   }
-  auto options_guard = AtScopeExit([&] { free(options.mountpoint); });
+  auto options_guard = AtScopeExit([&] {
+    free(options.mountpoint);  // NOLINT
+  });
   if (options.show_help) {
     std::cerr << "Please visit http://localhost:12345 to add accounts while "
                  "the program is running."
@@ -77,16 +81,14 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     co_return -1;
   }
   try {
-    event signal_event[sizeof(kHandledSignals) / sizeof(kHandledSignals[0])] =
-        {};
+    std::array<event, kHandledSignals.size()> signal_event = {};
     auto scope_guard = AtScopeExit([&] {
       for (event& event : signal_event) {
         event_del(&event);
       }
     });
     EventContext event_context{};
-    for (size_t i = 0; i < sizeof(kHandledSignals) / sizeof(kHandledSignals[0]);
-         i++) {
+    for (size_t i = 0; i < signal_event.size(); i++) {
       CheckEvent(event_assign(&signal_event[i], event_base, kHandledSignals[i],
                               EV_SIGNAL, OnSignal, &event_context));
       CheckEvent(event_add(&signal_event[i], nullptr));

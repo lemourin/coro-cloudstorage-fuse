@@ -1,18 +1,18 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_SRC_AUTH_DATA_H
 #define CORO_CLOUDSTORAGE_FUSE_SRC_AUTH_DATA_H
 
-#include <coro/cloudstorage/providers/amazon_s3.h>
-#include <coro/cloudstorage/providers/box.h>
-#include <coro/cloudstorage/providers/dropbox.h>
-#include <coro/cloudstorage/providers/google_drive.h>
-#include <coro/cloudstorage/providers/hubic.h>
-#include <coro/cloudstorage/providers/mega.h>
-#include <coro/cloudstorage/providers/one_drive.h>
-#include <coro/cloudstorage/providers/pcloud.h>
-#include <coro/cloudstorage/providers/webdav.h>
-#include <coro/cloudstorage/providers/yandex_disk.h>
-
 #include <string_view>
+
+#include "coro/cloudstorage/providers/amazon_s3.h"
+#include "coro/cloudstorage/providers/box.h"
+#include "coro/cloudstorage/providers/dropbox.h"
+#include "coro/cloudstorage/providers/google_drive.h"
+#include "coro/cloudstorage/providers/hubic.h"
+#include "coro/cloudstorage/providers/mega.h"
+#include "coro/cloudstorage/providers/one_drive.h"
+#include "coro/cloudstorage/providers/pcloud.h"
+#include "coro/cloudstorage/providers/webdav.h"
+#include "coro/cloudstorage/providers/yandex_disk.h"
 
 namespace coro::cloudstorage::fuse {
 

@@ -1,12 +1,5 @@
-#include "fuse_winfsp.h"
+#include "coro/cloudstorage/fuse/fuse_winfsp.h"
 
-#include <coro/cloudstorage/fuse/auth_data.h>
-#include <coro/cloudstorage/fuse/filesystem_context.h>
-#include <coro/cloudstorage/fuse/filesystem_provider.h>
-#include <coro/cloudstorage/fuse/fuse_winfsp_context.h>
-#include <coro/cloudstorage/util/abstract_cloud_provider.h>
-#include <coro/cloudstorage/util/cloud_factory_context.h>
-#include <coro/cloudstorage/util/random_number_generator.h>
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
@@ -14,6 +7,14 @@
 #include <iostream>
 #include <optional>
 #include <string>
+
+#include "coro/cloudstorage/fuse/auth_data.h"
+#include "coro/cloudstorage/fuse/filesystem_context.h"
+#include "coro/cloudstorage/fuse/filesystem_provider.h"
+#include "coro/cloudstorage/fuse/fuse_winfsp_context.h"
+#include "coro/cloudstorage/util/abstract_cloud_provider.h"
+#include "coro/cloudstorage/util/cloud_factory_context.h"
+#include "coro/cloudstorage/util/random_number_generator.h"
 
 namespace coro::cloudstorage::fuse {
 
