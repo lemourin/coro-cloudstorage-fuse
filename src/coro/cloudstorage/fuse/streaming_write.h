@@ -1,8 +1,11 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_STREAMING_WRITE_H
 #define CORO_CLOUDSTORAGE_FUSE_STREAMING_WRITE_H
 
+#include "coro/cloudstorage/cloud_exception.h"
+#include "coro/cloudstorage/util/string_utils.h"
 #include "coro/mutex.h"
 #include "coro/util/event_loop.h"
+#include "coro/util/raii_utils.h"
 #include "coro/util/thread_pool.h"
 
 namespace coro::cloudstorage {
