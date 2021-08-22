@@ -1,14 +1,15 @@
 #ifdef WIN32
 
-#include <coro/cloudstorage/fuse/filesystem_context.h>
-#include <coro/cloudstorage/fuse/fuse_winfsp.h>
-#include <coro/util/raii_utils.h>
 #include <event2/event.h>
 #include <event2/thread.h>
 
 #include <future>
 #include <iostream>
 #include <sstream>
+
+#include "coro/cloudstorage/fuse/filesystem_context.h"
+#include "coro/cloudstorage/fuse/fuse_winfsp.h"
+#include "coro/util/raii_utils.h"
 
 using ::coro::util::AtScopeExit;
 
@@ -323,9 +324,9 @@ INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
 }
 #else
 
-#include <coro/cloudstorage/fuse/fuse_posix.h>
-
 #include <csignal>
+
+#include "coro/cloudstorage/fuse/fuse_posix.h"
 
 int main(int argc, char** argv) {
   signal(SIGPIPE, SIG_IGN);  // NOLINT
