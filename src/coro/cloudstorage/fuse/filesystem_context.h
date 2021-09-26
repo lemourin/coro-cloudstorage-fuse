@@ -9,6 +9,7 @@
 #include "coro/cloudstorage/providers/dropbox.h"
 #include "coro/cloudstorage/providers/google_drive.h"
 #include "coro/cloudstorage/providers/hubic.h"
+#include "coro/cloudstorage/providers/local_filesystem.h"
 #include "coro/cloudstorage/providers/mega.h"
 #include "coro/cloudstorage/providers/one_drive.h"
 #include "coro/cloudstorage/providers/pcloud.h"
@@ -58,7 +59,7 @@ class FileSystemContext {
   using CloudProviderTypeList = std::conditional_t<
       kTestCloudProvider, coro::util::TypeList<TestCloudProviderT>,
       coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
-                           PCloud, WebDAV, YandexDisk, HubiC>>;
+                           PCloud, WebDAV, YandexDisk, HubiC, LocalFileSystem>>;
   using CloudFactoryContextT =
       coro::cloudstorage::util::CloudFactoryContext<AuthData>;
   using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
