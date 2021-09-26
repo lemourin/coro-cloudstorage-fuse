@@ -55,8 +55,9 @@ class WinFspServiceContext {
   using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
   using RandomNumberGeneratorT =
       util::RandomNumberGenerator<std::default_random_engine>;
-  using CloudFactoryT = CloudFactory<EventLoopT, HttpT, ThumbnailGeneratorT,
-                                     MuxerT, RandomNumberGeneratorT, AuthData>;
+  using CloudFactoryT =
+      CloudFactory<EventLoopT, ThreadPoolT, HttpT, ThumbnailGeneratorT, MuxerT,
+                   RandomNumberGeneratorT, AuthData>;
 
   using CloudProviderAccountT =
       coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
