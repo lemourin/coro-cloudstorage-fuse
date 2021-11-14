@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.17)
 project(coro-cloudstorage-fuse)
 
+include(FindPkgConfig)
+
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" IS_SYSTEM_DIR)
 if("${IS_SYSTEM_DIR}" STREQUAL "-1")
@@ -59,8 +61,6 @@ else()
         src/coro/cloudstorage/fuse/fuse_posix.cc
         src/coro/cloudstorage/fuse/fuse_posix.h)
 
-    include(FindPkgConfig)
-
     pkg_check_modules(fuse IMPORTED_TARGET fuse3)
     if(NOT fuse_FOUND)
         pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse)
@@ -71,7 +71,7 @@ else()
         target_compile_definitions(coro-cloudstorage-fuse PRIVATE CORO_CLOUDSTORAGE_FUSE2)
     endif()
 
-    target_link_libraries(coro-cloudstorage-fuse PRIVATE event_pthreads PkgConfig::fuse)
+    target_link_libraries(coro-cloudstorage-fuse PRIVATE libevent::pthreads PkgConfig::fuse)
     target_compile_definitions(coro-cloudstorage-fuse PRIVATE FUSE_USE_VERSION=39)
 endif()
 
@@ -82,7 +82,7 @@ endif()
 target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")
 
 if(BUILD_SHARED_LIBS)
-    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http coro-util stdx coro)
+    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http)
 else()
     install(TARGETS coro-cloudstorage-fuse)
 endif()
