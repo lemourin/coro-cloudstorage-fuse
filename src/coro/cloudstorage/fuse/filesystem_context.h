@@ -4,21 +4,11 @@
 #include "coro/cloudstorage/cloud_factory.h"
 #include "coro/cloudstorage/fuse/auth_data.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
-#include "coro/cloudstorage/providers/amazon_s3.h"
-#include "coro/cloudstorage/providers/box.h"
-#include "coro/cloudstorage/providers/dropbox.h"
-#include "coro/cloudstorage/providers/google_drive.h"
-#include "coro/cloudstorage/providers/hubic.h"
-#include "coro/cloudstorage/providers/local_filesystem.h"
-#include "coro/cloudstorage/providers/mega.h"
-#include "coro/cloudstorage/providers/one_drive.h"
-#include "coro/cloudstorage/providers/pcloud.h"
-#include "coro/cloudstorage/providers/webdav.h"
-#include "coro/cloudstorage/providers/yandex_disk.h"
 #include "coro/cloudstorage/util/account_manager_handler.h"
 #include "coro/cloudstorage/util/cloud_factory_context.h"
 #include "coro/cloudstorage/util/merged_cloud_provider.h"
 #include "coro/cloudstorage/util/muxer.h"
+#include "coro/cloudstorage/util/providers.h"
 #include "coro/cloudstorage/util/random_number_generator.h"
 #include "coro/cloudstorage/util/thumbnail_generator.h"
 #include "coro/cloudstorage/util/timing_out_cloud_provider.h"
@@ -53,21 +43,13 @@ using CloudProviderT = decltype(CreateCloudProvider<CloudProvider>(
 
 class FileSystemContext {
  public:
-  using TestCloudProviderT = GoogleDrive;
-  static inline constexpr bool kTestCloudProvider = false;
-
-  using CloudProviderTypeList = std::conditional_t<
-      kTestCloudProvider, coro::util::TypeList<TestCloudProviderT>,
-      coro::util::TypeList<GoogleDrive, Mega, AmazonS3, Box, Dropbox, OneDrive,
-                           PCloud, WebDAV, YandexDisk, HubiC, LocalFileSystem>>;
-  using CloudFactoryContextT =
-      coro::cloudstorage::util::CloudFactoryContext<AuthData>;
+  using CloudProviderTypeList = util::CloudProviderTypeList;
+  using CloudFactoryContextT = util::CloudFactoryContext<AuthData>;
   using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
   using ThumbnailGeneratorT = CloudFactoryContextT::ThumbnailGeneratorT;
   using CloudFactoryT = CloudFactoryContextT::CloudFactoryT;
   using CloudProviderAccountT =
-      coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
-                                                     CloudFactoryT>;
+      util::CloudProviderAccount<CloudProviderTypeList, CloudFactoryT>;
 
   using MergedCloudProviderT =
       util::MergedCloudProvider<CloudProviderAccountT::Ts>::CloudProvider;
@@ -92,12 +74,7 @@ class FileSystemContext {
   using TimingOutCloudProviderT =
       util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider;
 
-  using CloudProviderT =
-      std::conditional_t<kTestCloudProvider,
-                         coro::cloudstorage::fuse::CloudProviderT<
-                             TestCloudProviderT, CloudFactoryT>,
-                         TimingOutCloudProviderT>;
-
+  using CloudProviderT = TimingOutCloudProviderT;
   using FileSystemProviderT = FileSystemProvider<CloudProviderT, ThreadPoolT>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
