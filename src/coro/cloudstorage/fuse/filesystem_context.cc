@@ -23,7 +23,7 @@ FileSystemContext::FileSystemContext(event_base* event_base, Config config)
       fs_(&provider_, context_.thread_pool(), config.fs_config),
       http_server_(
           event_base,
-          http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
+          http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
           context_.factory(), context_.thumbnail_generator(),
           ForwardToMergedCloudProvider{provider_.GetProvider()},
           util::AuthTokenManager([&] {

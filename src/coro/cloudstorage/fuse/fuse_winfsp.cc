@@ -111,7 +111,7 @@ class WinFspServiceContext {
         : context_(context->event_base_.get()),
           http_server_(
               context->event_base_.get(),
-              http::HttpServerConfig{.address = "127.0.0.1", .port = 12345},
+              http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
               context_.factory(), context_.thumbnail_generator(),
               CloudProviderAccountListener{this}) {}
 
