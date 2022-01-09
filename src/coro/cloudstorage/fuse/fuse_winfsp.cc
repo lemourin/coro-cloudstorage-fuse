@@ -109,11 +109,10 @@ class WinFspServiceContext {
 
     FileSystemContext(WinFspServiceContext* context)
         : context_(context->event_base_.get()),
-          http_server_(
-              context->event_base_.get(),
-              http::HttpServerConfig{.address = "0.0.0.0", .port = 12345},
-              context_.factory(), context_.thumbnail_generator(),
-              CloudProviderAccountListener{this}) {}
+          http_server_(context->event_base_.get(),
+                       util::SettingsManager().GetHttpServerConfig(),
+                       context_.factory(), context_.thumbnail_generator(),
+                       CloudProviderAccountListener{this}) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
     FileSystemContext(FileSystemContext&&) = delete;
