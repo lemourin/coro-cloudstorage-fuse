@@ -13,6 +13,7 @@
 #include "coro/cloudstorage/providers/pcloud.h"
 #include "coro/cloudstorage/providers/webdav.h"
 #include "coro/cloudstorage/providers/yandex_disk.h"
+#include "coro/cloudstorage/util/auth_data.h"
 
 namespace coro::cloudstorage::fuse {
 
@@ -52,6 +53,9 @@ struct AuthData {
           .client_secret =
               "Xk1ezMMSGNeU4r0wv3jutleYX9XvXmgg8XVElJjqoDvlDw0KsC9U2tkS"
               "xJxYof8V"};
+    } else {
+      auth_data = coro::cloudstorage::util::AuthData{}
+                      .template operator()<CloudProvider>();
     }
     if constexpr (util::HasRedirectUri<decltype(auth_data)>) {
       auth_data.redirect_uri =
