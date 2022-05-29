@@ -2,7 +2,6 @@
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_CONTEXT_H
 
 #include "coro/cloudstorage/cloud_factory.h"
-#include "coro/cloudstorage/fuse/auth_data.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 #include "coro/cloudstorage/util/account_manager_handler.h"
 #include "coro/cloudstorage/util/cloud_factory_context.h"
@@ -26,14 +25,10 @@ class FileSystemContext {
     FileSystemProviderConfig fs_config;
   };
 
-  using FileSystemProviderT =
-      FileSystemProvider<util::AbstractCloudProvider::CloudProvider,
-                         coro::util::ThreadPool>;
-
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
 
-  const FileSystemProviderT& fs() const { return fs_; }
-  FileSystemProviderT& fs() { return fs_; }
+  const auto& fs() const { return fs_; }
+  auto& fs() { return fs_; }
 
   Task<> Quit() { return http_server_.Quit(); }
 
@@ -42,7 +37,7 @@ class FileSystemContext {
   util::MergedCloudProvider::CloudProvider merged_provider_;
   std::unique_ptr<util::AbstractCloudProvider::CloudProvider> provider_;
   util::TimingOutCloudProvider timing_out_provider_;
-  FileSystemProviderT fs_;
+  FileSystemProvider fs_;
   coro::http::HttpServer<util::AccountManagerHandler> http_server_;
 };
 

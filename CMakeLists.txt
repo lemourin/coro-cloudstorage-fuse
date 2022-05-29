@@ -20,12 +20,15 @@ add_executable(coro-cloudstorage-fuse ${OPTIONS})
 target_sources(coro-cloudstorage-fuse PRIVATE
     src/main.cc
     src/coro/cloudstorage/fuse/sparse_file.h
-    src/coro/cloudstorage/fuse/auth_data.h
+    src/coro/cloudstorage/fuse/sparse_file.cc
     src/coro/cloudstorage/fuse/streaming_write.h
+    src/coro/cloudstorage/fuse/streaming_write.cc
     src/coro/cloudstorage/fuse/item_context.h
+    src/coro/cloudstorage/fuse/item_context.cc
     src/coro/cloudstorage/fuse/filesystem_context.h
     src/coro/cloudstorage/fuse/filesystem_context.cc
     src/coro/cloudstorage/fuse/filesystem_provider.h
+    src/coro/cloudstorage/fuse/filesystem_provider.cc
 )
 
 target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
@@ -58,6 +61,7 @@ if(WIN32)
 else()
     target_sources(coro-cloudstorage-fuse PRIVATE
         src/coro/cloudstorage/fuse/fuse_posix_context.h
+        src/coro/cloudstorage/fuse/fuse_posix_context.cc
         src/coro/cloudstorage/fuse/fuse_posix.cc
         src/coro/cloudstorage/fuse/fuse_posix.h)
 

@@ -20,8 +20,6 @@ namespace {
 using ::coro::util::AtScopeExit;
 using ::coro::util::EventBaseDeleter;
 
-using FuseContext = FusePosixContext<FileSystemContext::FileSystemProviderT>;
-
 constexpr std::array<int, 2> kHandledSignals = {SIGINT, SIGTERM};
 
 struct FreeDeleter {
@@ -33,7 +31,7 @@ struct FreeDeleter {
 
 struct EventContext {
   stdx::stop_source stop_source;
-  FuseContext* context;
+  FusePosixContext* context;
 };
 
 void CheckEvent(int d) {
@@ -94,10 +92,10 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
     FileSystemContext fs_context(event_base);
-    std::unique_ptr<FuseContext> context;
+    std::unique_ptr<FusePosixContext> context;
     int status = 0;
     try {
-      context = co_await FuseContext::Create(
+      context = co_await FusePosixContext::Create(
           event_base, &fs_context.fs(), &args, &options, conn_opts.get(),
           event_context.stop_source.get_token());
       event_context.context = context.get();
