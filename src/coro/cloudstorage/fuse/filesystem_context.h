@@ -8,7 +8,6 @@
 #include "coro/cloudstorage/util/cloud_factory_context.h"
 #include "coro/cloudstorage/util/merged_cloud_provider.h"
 #include "coro/cloudstorage/util/muxer.h"
-#include "coro/cloudstorage/util/providers.h"
 #include "coro/cloudstorage/util/random_number_generator.h"
 #include "coro/cloudstorage/util/thumbnail_generator.h"
 #include "coro/cloudstorage/util/timing_out_cloud_provider.h"
@@ -19,63 +18,17 @@
 
 namespace coro::cloudstorage::fuse {
 
-template <typename CloudProvider, typename Factory>
-auto CreateCloudProvider(const Factory* factory) {
-  using ::coro::cloudstorage::util::AuthToken;
-  using ::coro::cloudstorage::util::AuthTokenManager;
-
-  auto token_data =
-      AuthTokenManager().LoadTokenData<coro::util::TypeList<CloudProvider>>();
-  if (token_data.empty()) {
-    throw CloudException(CloudException::Type::kUnauthorized);
-  }
-
-  auto token = std::get<AuthToken<CloudProvider>>(token_data.front());
-  return factory->template Create<CloudProvider>(
-      token, [id = std::move(token.id)](const auto& new_token) {
-        AuthTokenManager().template SaveToken<CloudProvider>(new_token, id);
-      });
-}
-
-template <typename CloudProvider, typename Factory>
-using CloudProviderT = decltype(CreateCloudProvider<CloudProvider>(
-    static_cast<Factory*>(nullptr)));
-
 class FileSystemContext {
  public:
-  using CloudProviderTypeList = util::CloudProviderTypeList;
-  using CloudFactoryContextT = util::CloudFactoryContext<AuthData>;
-  using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
-  using ThumbnailGeneratorT = CloudFactoryContextT::ThumbnailGeneratorT;
-  using CloudFactoryT = CloudFactoryContextT::CloudFactoryT;
-  using CloudProviderAccountT =
-      util::CloudProviderAccount<CloudProviderTypeList, CloudFactoryT>;
-
-  using MergedCloudProviderT =
-      util::MergedCloudProvider<CloudProviderAccountT::Ts>::CloudProvider;
-
-  struct ForwardToMergedCloudProvider {
-    void OnCreate(CloudProviderAccountT* account);
-    Task<> OnDestroy(CloudProviderAccountT* account);
-
-    MergedCloudProviderT* provider;
-  };
-  using AccountManagerHandlerT =
-      util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
-                                  ThumbnailGeneratorT,
-                                  ForwardToMergedCloudProvider>;
-
   struct Config {
     int timeout_ms;
     std::optional<std::string> config_path;
     FileSystemProviderConfig fs_config;
   };
 
-  using TimingOutCloudProviderT =
-      util::TimingOutCloudProvider<MergedCloudProviderT>::CloudProvider;
-
-  using CloudProviderT = TimingOutCloudProviderT;
-  using FileSystemProviderT = FileSystemProvider<CloudProviderT, ThreadPoolT>;
+  using FileSystemProviderT =
+      FileSystemProvider<util::AbstractCloudProvider::CloudProvider,
+                         coro::util::ThreadPool>;
 
   explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
 
@@ -85,11 +38,12 @@ class FileSystemContext {
   Task<> Quit() { return http_server_.Quit(); }
 
  private:
-  CloudFactoryContextT context_;
-  MergedCloudProviderT merged_provider_;
-  CloudProviderT provider_;
+  util::CloudFactoryContext context_;
+  util::MergedCloudProvider::CloudProvider merged_provider_;
+  std::unique_ptr<util::AbstractCloudProvider::CloudProvider> provider_;
+  util::TimingOutCloudProvider timing_out_provider_;
   FileSystemProviderT fs_;
-  coro::http::HttpServer<AccountManagerHandlerT> http_server_;
+  coro::http::HttpServer<util::AccountManagerHandler> http_server_;
 };
 
 }  // namespace coro::cloudstorage::fuse
