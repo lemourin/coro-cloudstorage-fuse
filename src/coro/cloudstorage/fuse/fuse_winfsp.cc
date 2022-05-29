@@ -23,9 +23,17 @@ namespace {
 using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::cloudstorage::util::AbstractCloudProvider;
+using ::coro::cloudstorage::util::AccountManagerHandler;
+using ::coro::cloudstorage::util::AuthTokenManager;
 using ::coro::cloudstorage::util::CloudFactoryContext;
+using ::coro::cloudstorage::util::CloudProviderAccount;
+using ::coro::cloudstorage::util::SettingsManager;
+using ::coro::cloudstorage::util::StrCat;
+using ::coro::cloudstorage::util::TimingOutCloudProvider;
 using ::coro::util::AtScopeExit;
 using ::coro::util::EventBaseDeleter;
+using ::coro::util::EventLoop;
+using ::coro::util::ThreadPool;
 
 class WinFspServiceContext {
  public:
@@ -44,93 +52,67 @@ class WinFspServiceContext {
   WinFspServiceContext& operator=(WinFspServiceContext&&) = delete;
 
  private:
-  using CloudProviderTypeList = FileSystemContext::CloudProviderTypeList;
-
   class FileSystemContext;
 
   using HttpT = http::CacheHttp<http::CurlHttp>;
-  using EventLoopT = coro::util::EventLoop;
-  using ThreadPoolT = coro::util::ThreadPool<EventLoopT>;
-  using ThumbnailGeneratorT = util::ThumbnailGenerator<ThreadPoolT, EventLoopT>;
-  using MuxerT = util::Muxer<EventLoopT, ThreadPoolT>;
-  using RandomNumberGeneratorT =
-      util::RandomNumberGenerator<std::default_random_engine>;
-  using CloudFactoryT =
-      CloudFactory<EventLoopT, ThreadPoolT, HttpT, ThumbnailGeneratorT, MuxerT,
-                   RandomNumberGeneratorT, AuthData>;
-
-  using CloudProviderAccountT =
-      coro::cloudstorage::util::CloudProviderAccount<CloudProviderTypeList,
-                                                     CloudFactoryT>;
 
   struct CloudProviderAccountListener {
-    void OnCreate(CloudProviderAccountT* account);
-    Task<> OnDestroy(CloudProviderAccountT* account);
+    void OnCreate(CloudProviderAccount* account);
+    Task<> OnDestroy(CloudProviderAccount* account);
 
     FileSystemContext* context;
   };
 
-  using AccountManagerHandlerT =
-      util::AccountManagerHandler<CloudProviderTypeList, CloudFactoryT,
-                                  ThumbnailGeneratorT,
-                                  CloudProviderAccountListener>;
-
   class FileProvider {
    public:
-    template <typename CloudProvider>
-    FileProvider(CloudProvider* provider, EventLoopT* event_loop,
-                 ThreadPoolT* thread_pool, const wchar_t* mountpoint,
-                 const wchar_t* prefix)
-        : abstract_provider_(
-              std::make_unique<
-                  AbstractCloudProvider::CloudProviderImpl<CloudProvider>>(
-                  provider)),
-          provider_(event_loop, 10000, abstract_provider_.get()),
-          fs_provider_(&provider_, thread_pool, FileSystemProviderConfig()),
+    FileProvider(AbstractCloudProvider::CloudProvider* provider,
+                 EventLoop* event_loop, ThreadPool* thread_pool,
+                 const wchar_t* mountpoint, const wchar_t* prefix)
+        : id_(reinterpret_cast<intptr_t>(provider)),
+          provider_(std::make_unique<TimingOutCloudProvider>(event_loop, 10000,
+                                                             provider)),
+          fs_provider_(provider_.get(), thread_pool,
+                       FileSystemProviderConfig()),
           context_(event_loop, &fs_provider_, mountpoint, prefix) {}
 
-    intptr_t GetId() const { return abstract_provider_->GetId(); }
+    intptr_t GetId() const { return id_; }
 
    private:
-    using CloudProviderT = util::TimingOutCloudProvider<
-        AbstractCloudProvider::CloudProvider>::CloudProvider;
-
-    std::unique_ptr<AbstractCloudProvider::CloudProvider> abstract_provider_;
-    CloudProviderT provider_;
-    FileSystemProvider<CloudProviderT, ThreadPoolT> fs_provider_;
+    intptr_t id_;
+    std::unique_ptr<AbstractCloudProvider::CloudProvider> provider_;
+    FileSystemProvider<AbstractCloudProvider::CloudProvider, ThreadPool>
+        fs_provider_;
     WinFspContext<decltype(fs_provider_)> context_;
   };
 
   class FileSystemContext {
    public:
-    using CloudFactoryContextT = CloudFactoryContext<AuthData>;
-    using EventLoopT = CloudFactoryContextT::EventLoopT;
-    using ThreadPoolT = CloudFactoryContextT::ThreadPoolT;
-
     FileSystemContext(WinFspServiceContext* context)
         : context_(context->event_base_.get()),
           http_server_(context->event_base_.get(),
-                       util::SettingsManager().GetHttpServerConfig(),
+                       SettingsManager(AuthTokenManager(context_.factory()))
+                           .GetHttpServerConfig(),
                        context_.factory(), context_.thumbnail_generator(),
-                       CloudProviderAccountListener{this}) {}
+                       CloudProviderAccountListener{this},
+                       SettingsManager(AuthTokenManager(context_.factory()))) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
     FileSystemContext(FileSystemContext&&) = delete;
     FileSystemContext& operator=(const FileSystemContext&) = delete;
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
-    ThreadPoolT* thread_pool() { return context_.thread_pool(); }
-    EventLoopT* event_loop() { return context_.event_loop(); }
+    ThreadPool* thread_pool() { return context_.thread_pool(); }
+    EventLoop* event_loop() { return context_.event_loop(); }
 
     Task<> Quit() { return http_server_.Quit(); }
 
    private:
     friend struct CloudProviderAccountListener;
 
-    CloudFactoryContext<AuthData> context_;
+    CloudFactoryContext context_;
     std::mutex mutex_;
     std::list<FileProvider> contexts_;
-    coro::http::HttpServer<AccountManagerHandlerT> http_server_;
+    coro::http::HttpServer<AccountManagerHandler> http_server_;
   };
 
   class EventLoopThread {
@@ -193,38 +175,32 @@ std::wstring ToWideString(std::string_view input) {
 }
 
 void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
-    CloudProviderAccountT* account) {
-  std::visit(
-      [&]<typename CloudProvider>(CloudProvider& p) {
-        std::unique_lock lock{context->mutex_};
-        context->contexts_.emplace_back(
-            &p, context->event_loop(), context->thread_pool(), nullptr,
-            ToWideString(util::StrCat("\\", CloudProvider::Type::kId, "\\",
-                                      account->username()))
-                .c_str());
-      },
-      account->provider());
-  std::cerr << "CREATE " << account->GetId() << "\n";
+    CloudProviderAccount* account) {
+  std::unique_lock lock{context->mutex_};
+  context->contexts_.emplace_back(
+      &account->provider(), context->event_loop(), context->thread_pool(),
+      nullptr,
+      ToWideString(
+          util::StrCat("\\", account->type(), "\\", account->username()))
+          .c_str());
+  std::cerr << "CREATE " << account->id() << "\n";
 }
 
 Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
-    CloudProviderAccountT* account) {
-  co_await std::visit(
-      [&]<typename CloudProvider>(const CloudProvider& p) -> Task<> {
-        co_await context->thread_pool()->Do([&] {
-          std::unique_lock lock{context->mutex_};
-          auto& contexts = context->contexts_;
-          auto it = std::find_if(
-              contexts.begin(), contexts.end(), [&](const auto& provider) {
-                return provider.GetId() == reinterpret_cast<intptr_t>(&p);
-              });
-          if (it != contexts.end()) {
-            contexts.erase(it);
-          }
+    CloudProviderAccount* account) {
+  co_await context->thread_pool()->Do([&] {
+    std::unique_lock lock{context->mutex_};
+    auto& contexts = context->contexts_;
+    auto it = std::find_if(
+        contexts.begin(), contexts.end(), [&](const auto& provider) {
+          return provider.GetId() ==
+                 reinterpret_cast<intptr_t>(&account->provider());
         });
-      },
-      account->provider());
-  std::cerr << "DESTROY " << account->GetId() << "\n";
+    if (it != contexts.end()) {
+      contexts.erase(it);
+    }
+  });
+  std::cerr << "DESTROY " << account->id() << "\n";
 }
 
 }  // namespace
