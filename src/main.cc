@@ -71,7 +71,7 @@ struct WindowData {
 LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kIconMessageId) {
     if (lparam == WM_LBUTTONDOWN) {
-      ShellExecute(nullptr, TEXT("open"), TEXT("http://localhost:12345"),
+      ShellExecute(nullptr, TEXT("open"), TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI),
                    nullptr, nullptr, SW_SHOWNORMAL);
     } else if (lparam == WM_RBUTTONDOWN) {
       if (POINT mouse_position; GetCursorPos(&mouse_position)) {
@@ -244,7 +244,7 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   NETRESOURCE netresource = {
       .dwType = RESOURCETYPE_DISK,
       .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
-      .lpRemoteName = const_cast<LPTSTR>(TEXT("http://localhost:12345"))};
+      .lpRemoteName = const_cast<LPTSTR>(TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI))};
   Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/TEXT(""),
                            /*lpUserName=*/nullptr, /*dwFlags=*/0),
         TEXT("WNetAddConnection3"));

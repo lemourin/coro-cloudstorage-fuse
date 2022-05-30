@@ -61,8 +61,8 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     free(options.mountpoint);  // NOLINT
   });
   if (options.show_help) {
-    std::cerr << "Please visit http://localhost:12345 to add accounts while "
-                 "the program is running."
+    std::cerr << "Please visit " CORO_CLOUDSTORAGE_REDIRECT_URI
+                 " to add accounts while the program is running."
               << std::endl
               << std::endl;
     std::cerr << "Options for libfuse:" << std::endl;
