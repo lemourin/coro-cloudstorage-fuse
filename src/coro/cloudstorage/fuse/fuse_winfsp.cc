@@ -8,7 +8,6 @@
 #include <optional>
 #include <string>
 
-#include "coro/cloudstorage/fuse/auth_data.h"
 #include "coro/cloudstorage/fuse/filesystem_context.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 #include "coro/cloudstorage/fuse/fuse_winfsp_context.h"
@@ -80,9 +79,8 @@ class WinFspServiceContext {
    private:
     intptr_t id_;
     std::unique_ptr<AbstractCloudProvider::CloudProvider> provider_;
-    FileSystemProvider<AbstractCloudProvider::CloudProvider, ThreadPool>
-        fs_provider_;
-    WinFspContext<decltype(fs_provider_)> context_;
+    FileSystemProvider fs_provider_;
+    WinFspContext context_;
   };
 
   class FileSystemContext {

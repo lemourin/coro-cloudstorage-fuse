@@ -28,7 +28,6 @@ class FileSystemException : public std::exception {
   std::string message_;
 };
 
-template <typename FileSystemProvider>
 class WinFspContext {
  public:
   using FileSystemProviderT = FileSystemProvider;
@@ -64,12 +63,10 @@ class WinFspContext {
   }
 
  private:
-  using FileContext = typename FileSystemProviderT::ItemContextT;
-
   static constexpr int kAllocationUnit = 1;
 
-  struct FuseFileContext {
-    FileContext context;
+  struct FuseItemContext {
+    ItemContext context;
     std::string path;
     std::optional<uint64_t> size;
     bool written_to = false;
@@ -155,8 +152,8 @@ class WinFspContext {
     info->AllocationSize = GetAllocationSize(size);
   }
 
-  static void ToFileInfo(const FileContext& item, FSP_FSCTL_FILE_INFO* info) {
-    info->FileAttributes = item.GetType() == FileContext::ItemType::kDirectory
+  static void ToFileInfo(const ItemContext& item, FSP_FSCTL_FILE_INFO* info) {
+    info->FileAttributes = item.GetType() == ItemContext::ItemType::kDirectory
                                ? FILE_ATTRIBUTE_DIRECTORY
                                : FILE_ATTRIBUTE_NORMAL;
     info->ChangeTime =
@@ -177,10 +174,10 @@ class WinFspContext {
     auto* context = d->context_;
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
-        FileContext data = co_await context->GetItemContext(
+        ItemContext data = co_await context->GetItemContext(
             ToUnixPath(filename), d->stop_source_.get_token());
         ToFileInfo(data, file_info);
-        std::unique_ptr<FuseFileContext> fuse_file_context(new FuseFileContext{
+        std::unique_ptr<FuseItemContext> fuse_file_context(new FuseItemContext{
             .context = std::move(data), .path = ToUnixPath(filename)});
         *file_context = fuse_file_context.release();
         co_return STATUS_SUCCESS;
@@ -224,7 +221,7 @@ class WinFspContext {
 
   static VOID Close(FSP_FILE_SYSTEM* fs, PVOID file_context) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
-    d->RunOnEventLoop([file_context = reinterpret_cast<FuseFileContext*>(
+    d->RunOnEventLoop([file_context = reinterpret_cast<FuseItemContext*>(
                            file_context)]() -> Task<> {
       if (file_context) {
         FspFileSystemDeleteDirectoryBuffer(&file_context->directory_buffer);
@@ -239,7 +236,7 @@ class WinFspContext {
                                 ULONG buffer_length, PULONG bytes_transferred) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
     auto* context = d->context_;
-    auto* file_context = reinterpret_cast<FuseFileContext*>(file_context_ptr);
+    auto* file_context = reinterpret_cast<FuseItemContext*>(file_context_ptr);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     auto marker = marker_str ? std::make_optional<std::wstring>(marker_str)
                              : std::nullopt;
@@ -268,8 +265,8 @@ class WinFspContext {
               FSP_FSCTL_DIR_INFO fsctl_dir_info;
             } entry_buffer;
             FSP_FSCTL_DIR_INFO* entry = &entry_buffer.fsctl_dir_info;
-            std::vector<FileContext> data;
-            FOR_CO_AWAIT(std::vector<FileContext> & page_data,
+            std::vector<ItemContext> data;
+            FOR_CO_AWAIT(std::vector<ItemContext> & page_data,
                          context->ReadDirectory(file_context->context,
                                                 d->stop_source_.get_token())) {
               for (auto& item : page_data) {
@@ -277,7 +274,7 @@ class WinFspContext {
               }
             }
             auto [directory_name, file_name] = SplitPath(file_context->path);
-            FileContext parent = co_await context->GetItemContext(
+            ItemContext parent = co_await context->GetItemContext(
                 directory_name, d->stop_source_.get_token());
             NTSTATUS result = STATUS_SUCCESS;
             memcpy(entry->FileNameBuf, L".", sizeof(wchar_t));
@@ -298,7 +295,7 @@ class WinFspContext {
                                                entry, &result);
               Check(result);
             }
-            for (const FileContext& d : data) {
+            for (const ItemContext& d : data) {
               std::wstring filename = ToWindowsPath(d.GetName().c_str());
               if (filename.length() > MAX_PATH) {
                 continue;
@@ -354,12 +351,12 @@ class WinFspContext {
     return d->Do([=]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(ToUnixPath(filename));
-        FileContext parent = co_await context->GetItemContext(
+        ItemContext parent = co_await context->GetItemContext(
             directory_name, d->stop_source_.get_token());
 
         try {
-          std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{
+          std::unique_ptr<FuseItemContext> fuse_file_context(
+              new FuseItemContext{
                   .context = co_await context->GetItemContext(
                       ToUnixPath(filename), d->stop_source_.get_token()),
                   .path = ToUnixPath(filename)});
@@ -369,11 +366,11 @@ class WinFspContext {
         }
 
         if (create_options & FILE_DIRECTORY_FILE) {
-          FileContext new_item(co_await context->CreateDirectory(
+          ItemContext new_item(co_await context->CreateDirectory(
               parent, file_name, d->stop_source_.get_token()));
           ToFileInfo(new_item, file_info);
-          std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.context = std::move(new_item),
+          std::unique_ptr<FuseItemContext> fuse_file_context(
+              new FuseItemContext{.context = std::move(new_item),
                                   .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
@@ -384,8 +381,8 @@ class WinFspContext {
           new_item = co_await context->Flush(std::move(new_item),
                                              d->stop_source_.get_token());
           ToFileInfo(new_item, file_info);
-          std::unique_ptr<FuseFileContext> fuse_file_context(
-              new FuseFileContext{.context = std::move(new_item),
+          std::unique_ptr<FuseItemContext> fuse_file_context(
+              new FuseItemContext{.context = std::move(new_item),
                                   .path = ToUnixPath(filename)});
           *file_context = fuse_file_context.release();
           co_return STATUS_SUCCESS;
@@ -403,7 +400,7 @@ class WinFspContext {
   static NTSTATUS SetFileSize(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               UINT64 new_size, BOOLEAN set_allocation_size,
                               FSP_FSCTL_FILE_INFO* info) {
-    auto* file = static_cast<FuseFileContext*>(file_context);
+    auto* file = static_cast<FuseItemContext*>(file_context);
     file->size = new_size;
     ToFileInfo(file->context, info);
     SetSize(new_size, info);
@@ -417,7 +414,7 @@ class WinFspContext {
                             FSP_FSCTL_FILE_INFO* file_info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
     auto* context = d->context_;
-    auto* file = static_cast<FuseFileContext*>(file_context);
+    auto* file = static_cast<FuseItemContext*>(file_context);
     return d->Do([&]() -> Task<NTSTATUS> {
       try {
         auto [directory_name, file_name] = SplitPath(file->path);
@@ -443,7 +440,7 @@ class WinFspContext {
                        UINT64 offset, ULONG length, PULONG bytes_transferred) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
     auto* context = d->context_;
-    auto* file = static_cast<FuseFileContext*>(file_context);
+    auto* file = static_cast<FuseItemContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     if (static_cast<int64_t>(offset) >= file->context.GetSize().value_or(0)) {
       return STATUS_END_OF_FILE;
@@ -482,7 +479,7 @@ class WinFspContext {
                         PULONG bytes_transferred, FSP_FSCTL_FILE_INFO* info) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
     auto* context = d->context_;
-    auto file = static_cast<FuseFileContext*>(file_context);
+    auto file = static_cast<FuseItemContext*>(file_context);
     auto hint = FspFileSystemGetOperationContext()->Request->Hint;
     d->RunOnEventLoop([=]() mutable -> Task<> {
       FSP_FSCTL_TRANSACT_RSP response;
@@ -494,7 +491,7 @@ class WinFspContext {
       try {
         if (!file->written_to) {
           auto [directory_name, file_name] = SplitPath(file->path);
-          FileContext parent = co_await context->GetItemContext(
+          ItemContext parent = co_await context->GetItemContext(
               directory_name, d->stop_source_.get_token());
           file->context = co_await context->Create(
               parent, file_name, file->size, d->stop_source_.get_token());
@@ -556,7 +553,7 @@ class WinFspContext {
 
   static NTSTATUS GetFileInfo(FSP_FILE_SYSTEM* fs, PVOID file_context,
                               FSP_FSCTL_FILE_INFO* info) {
-    auto file = static_cast<FuseFileContext*>(file_context);
+    auto file = static_cast<FuseItemContext*>(file_context);
     ToFileInfo(file->context, info);
     SetSize(file->size.value_or(file->context.GetSize().value_or(0)), info);
     return STATUS_SUCCESS;
@@ -566,7 +563,7 @@ class WinFspContext {
                       ULONG flags) {
     auto* d = reinterpret_cast<WinFspContext*>(fs->UserContext);
     auto* context = d->context_;
-    auto* file = static_cast<FuseFileContext*>(file_context);
+    auto* file = static_cast<FuseItemContext*>(file_context);
     if (!file) {
       return;
     }
@@ -587,7 +584,7 @@ class WinFspContext {
         try {
           if (!file->written_to) {
             auto [directory_name, file_name] = SplitPath(file->path);
-            FileContext parent = co_await context->GetItemContext(
+            ItemContext parent = co_await context->GetItemContext(
                 directory_name, d->stop_source_.get_token());
             file->context = co_await context->Create(
                 parent, file_name, file->size, d->stop_source_.get_token());
@@ -619,8 +616,8 @@ class WinFspContext {
         const auto& [destination_directory_name, destination_file_name] =
             SplitPath(ToUnixPath(new_file_name));
 
-        auto source_item = reinterpret_cast<FuseFileContext*>(file_context);
-        FileContext new_item = FileContext::From(source_item->context);
+        auto source_item = reinterpret_cast<FuseItemContext*>(file_context);
+        ItemContext new_item = ItemContext::From(source_item->context);
         if (source_file_name != destination_file_name) {
           new_item = co_await context->Rename(source_item->context,
                                               destination_file_name,
