@@ -2,6 +2,8 @@
 
 namespace coro::cloudstorage {
 
+using ::coro::cloudstorage::util::AbstractCloudProvider;
+
 CurrentStreamingWrite::CurrentStreamingWrite(
     coro::util::ThreadPool* thread_pool, CloudProvider* provider,
     Directory parent, std::optional<int64_t> size, std::string_view name)
@@ -74,7 +76,7 @@ auto CurrentStreamingWrite::Flush(stdx::stop_token stop_token) -> Task<File> {
 
 auto CurrentStreamingWrite::CreateFile() -> Task<File> {
   try {
-    typename CloudProvider::FileContent content{.data = GetStream()};
+    AbstractCloudProvider::FileContent content{.data = GetStream()};
     if (size_) {
       content.size = *size_;
     }

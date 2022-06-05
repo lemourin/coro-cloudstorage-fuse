@@ -1,8 +1,12 @@
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 
+#include "coro/cloudstorage/util/cloud_provider_utils.h"
+
 namespace coro::cloudstorage::fuse {
 
 namespace {
+
+using ::coro::cloudstorage::util::GetItemByPath;
 
 struct RemoveItemF {
   template <typename ItemT>
@@ -47,12 +51,12 @@ auto FileSystemProvider::GetRoot(stdx::stop_token stop_token) const
 auto FileSystemProvider::GetItemContext(std::string path,
                                         stdx::stop_token stop_token) const
     -> Task<ItemContext> {
-  auto item = co_await provider_->GetItemByPath(path, stop_token);
+  auto item = co_await GetItemByPath(provider_, path, stop_token);
   std::optional<Directory> parent;
   if (auto it = path.find_last_of('/', path.length() - 2);
       it != std::string::npos) {
     parent = std::get<Directory>(
-        co_await provider_->GetItemByPath(path.substr(0, it), stop_token));
+        co_await GetItemByPath(provider_, path.substr(0, it), stop_token));
   }
   co_return ItemContext(std::move(item), std::move(parent));
 }
@@ -85,12 +89,8 @@ auto FileSystemProvider::ReadDirectory(const ItemContext& context,
 auto FileSystemProvider::GetVolumeData(stdx::stop_token stop_token) const
     -> Task<VolumeData> {
   auto data = co_await provider_->GetGeneralData(std::move(stop_token));
-  if constexpr (HasUsageData<decltype(data)>) {
-    co_return VolumeData{.space_used = data.space_used,
-                         .space_total = data.space_total};
-  } else {
-    co_return VolumeData{.space_used = 0, .space_total = 0};
-  }
+  co_return VolumeData{.space_used = data.space_used,
+                       .space_total = data.space_total};
 }
 
 auto FileSystemProvider::Read(const ItemContext& context, int64_t offset,

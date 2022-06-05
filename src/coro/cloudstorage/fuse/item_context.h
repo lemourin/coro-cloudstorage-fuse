@@ -1,10 +1,10 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_ITEM_CONTEXT_H
 #define CORO_CLOUDSTORAGE_FUSE_ITEM_CONTEXT_H
 
-#include "coro/cloudstorage/cloud_provider.h"
 #include "coro/cloudstorage/fuse/sparse_file.h"
 #include "coro/cloudstorage/fuse/streaming_write.h"
 #include "coro/cloudstorage/util/abstract_cloud_provider.h"
+#include "coro/shared_promise.h"
 
 namespace coro::cloudstorage::fuse {
 
