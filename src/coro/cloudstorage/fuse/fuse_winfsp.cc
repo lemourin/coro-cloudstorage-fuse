@@ -64,7 +64,7 @@ class WinFspServiceContext {
 
   class FileProvider {
    public:
-    FileProvider(AbstractCloudProvider::CloudProvider* provider,
+    FileProvider(AbstractCloudProvider* provider,
                  EventLoop* event_loop, ThreadPool* thread_pool,
                  const wchar_t* mountpoint, const wchar_t* prefix)
         : id_(reinterpret_cast<intptr_t>(provider)),
@@ -78,7 +78,7 @@ class WinFspServiceContext {
 
    private:
     intptr_t id_;
-    std::unique_ptr<AbstractCloudProvider::CloudProvider> provider_;
+    std::unique_ptr<AbstractCloudProvider> provider_;
     FileSystemProvider fs_provider_;
     WinFspContext context_;
   };
