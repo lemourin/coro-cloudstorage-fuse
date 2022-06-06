@@ -45,7 +45,7 @@ class ItemContext {
   struct NewFileRead {
     Task<> operator()();
 
-    util::AbstractCloudProvider::CloudProvider* provider;
+    util::AbstractCloudProvider* provider;
     coro::util::ThreadPool* thread_pool;
     File item;
     std::FILE* file;

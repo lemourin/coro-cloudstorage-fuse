@@ -16,7 +16,7 @@ namespace coro::cloudstorage {
 
 class CurrentStreamingWrite {
  public:
-  using CloudProvider = util::AbstractCloudProvider::CloudProvider;
+  using CloudProvider = util::AbstractCloudProvider;
   using File = util::AbstractCloudProvider::File;
   using Directory = util::AbstractCloudProvider::Directory;
 

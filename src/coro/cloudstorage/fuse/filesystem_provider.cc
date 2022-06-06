@@ -13,7 +13,7 @@ struct RemoveItemF {
   Task<> operator()(ItemT d) && {
     co_await provider->RemoveItem(d, std::move(stop_token));
   }
-  util::AbstractCloudProvider::CloudProvider* provider;
+  util::AbstractCloudProvider* provider;
   stdx::stop_token stop_token;
 };
 
@@ -24,7 +24,7 @@ struct MoveItemF {
     co_return co_await provider->MoveItem(source, destination,
                                           std::move(stop_token));
   };
-  util::AbstractCloudProvider::CloudProvider* provider;
+  util::AbstractCloudProvider* provider;
   util::AbstractCloudProvider::Directory destination;
   stdx::stop_token stop_token;
 };
@@ -36,7 +36,7 @@ struct RenameItemF {
     co_return co_await provider->RenameItem(
         std::move(item), std::move(destination_name), std::move(stop_token));
   }
-  util::AbstractCloudProvider::CloudProvider* provider;
+  util::AbstractCloudProvider* provider;
   std::string destination_name;
   stdx::stop_token stop_token;
 };

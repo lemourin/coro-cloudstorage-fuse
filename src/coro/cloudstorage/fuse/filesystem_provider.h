@@ -24,7 +24,7 @@ class FileSystemProvider {
   using File = ItemContext::File;
   using Directory = ItemContext::Directory;
 
-  FileSystemProvider(util::AbstractCloudProvider::CloudProvider* provider,
+  FileSystemProvider(util::AbstractCloudProvider* provider,
                      coro::util::ThreadPool* thread_pool,
                      FileSystemProviderConfig config)
       : provider_(provider),
@@ -100,7 +100,7 @@ class FileSystemProvider {
     coro::util::ThreadPool* thread_pool;
   };
 
-  util::AbstractCloudProvider::CloudProvider* provider_;
+  util::AbstractCloudProvider* provider_;
   coro::util::ThreadPool* thread_pool_;
   mutable coro::util::LRUCache<std::string, SparseFileFactory> content_cache_;
   mutable std::chrono::system_clock::duration time_to_first_byte_sum_ =

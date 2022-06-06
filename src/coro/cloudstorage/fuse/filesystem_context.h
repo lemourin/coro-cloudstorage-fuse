@@ -34,8 +34,8 @@ class FileSystemContext {
 
  private:
   util::CloudFactoryContext context_;
-  util::MergedCloudProvider::CloudProvider merged_provider_;
-  std::unique_ptr<util::AbstractCloudProvider::CloudProvider> provider_;
+  util::MergedCloudProvider merged_provider_;
+  std::unique_ptr<util::AbstractCloudProvider> provider_;
   util::TimingOutCloudProvider timing_out_provider_;
   FileSystemProvider fs_;
   coro::http::HttpServer<util::AccountManagerHandler> http_server_;
