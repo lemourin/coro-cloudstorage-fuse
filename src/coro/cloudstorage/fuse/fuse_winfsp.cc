@@ -3,6 +3,9 @@
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
+#undef CreateDirectory
+#undef CreateFile
+
 #include <future>
 #include <iostream>
 #include <optional>
@@ -64,9 +67,9 @@ class WinFspServiceContext {
 
   class FileProvider {
    public:
-    FileProvider(AbstractCloudProvider* provider,
-                 EventLoop* event_loop, ThreadPool* thread_pool,
-                 const wchar_t* mountpoint, const wchar_t* prefix)
+    FileProvider(AbstractCloudProvider* provider, EventLoop* event_loop,
+                 ThreadPool* thread_pool, const wchar_t* mountpoint,
+                 const wchar_t* prefix)
         : id_(reinterpret_cast<intptr_t>(provider)),
           provider_(std::make_unique<TimingOutCloudProvider>(event_loop, 10000,
                                                              provider)),

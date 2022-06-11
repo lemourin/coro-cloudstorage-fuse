@@ -6,12 +6,7 @@
 #include "coro/cloudstorage/util/account_manager_handler.h"
 #include "coro/cloudstorage/util/cloud_factory_context.h"
 #include "coro/cloudstorage/util/merged_cloud_provider.h"
-#include "coro/cloudstorage/util/muxer.h"
-#include "coro/cloudstorage/util/random_number_generator.h"
-#include "coro/cloudstorage/util/thumbnail_generator.h"
 #include "coro/cloudstorage/util/timing_out_cloud_provider.h"
-#include "coro/http/cache_http.h"
-#include "coro/http/curl_http.h"
 #include "coro/http/http_server.h"
 #include "coro/util/event_loop.h"
 

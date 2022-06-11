@@ -39,6 +39,7 @@ if(WIN32)
     target_sources(coro-cloudstorage-fuse PRIVATE
         resources.rc
         src/coro/cloudstorage/fuse/fuse_winfsp_context.h
+        src/coro/cloudstorage/fuse/fuse_winfsp_context.cc
         src/coro/cloudstorage/fuse/fuse_winfsp.h
         src/coro/cloudstorage/fuse/fuse_winfsp.cc)
 
