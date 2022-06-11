@@ -2,6 +2,7 @@
 #define CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_CONTEXT_H
 
 #include <event2/event.h>
+#include <event2/event_struct.h>
 #include <fuse_lowlevel.h>
 
 #include <iostream>
