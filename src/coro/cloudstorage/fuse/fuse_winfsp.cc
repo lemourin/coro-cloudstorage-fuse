@@ -1,5 +1,6 @@
 #include "coro/cloudstorage/fuse/fuse_winfsp.h"
 
+#include <event2/event.h>
 #include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
@@ -56,7 +57,7 @@ class WinFspServiceContext {
  private:
   class FileSystemContext;
 
-  using HttpT = http::CacheHttp<http::CurlHttp>;
+  using HttpT = http::CacheHttp;
 
   struct CloudProviderAccountListener {
     void OnCreate(CloudProviderAccount* account);

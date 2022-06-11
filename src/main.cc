@@ -1,6 +1,10 @@
 #ifdef WIN32
 
+#include <event2/event.h>
 #include <event2/thread.h>
+
+#undef CreateDirectory
+#undef CreateFile
 
 #include <future>
 #include <iostream>
