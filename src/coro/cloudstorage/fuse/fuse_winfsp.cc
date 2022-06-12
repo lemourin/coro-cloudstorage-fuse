@@ -1,7 +1,5 @@
 #include "coro/cloudstorage/fuse/fuse_winfsp.h"
 
-#include <event2/event.h>
-#include <event2/thread.h>
 #include <winfsp/winfsp.h>
 
 #undef CreateDirectory
@@ -41,13 +39,7 @@ using ::coro::util::ThreadPool;
 class WinFspServiceContext {
  public:
   WinFspServiceContext()
-      : event_base_([] {
-          evthread_use_windows_threads();
-          return event_base_new();
-        }()),
-        event_loop_thread_(event_base_.get()),
-        event_loop_(event_base_.get()),
-        fs_context_(this) {}
+      : event_loop_thread_(&event_loop_), fs_context_(this) {}
 
   WinFspServiceContext(const WinFspServiceContext&) = delete;
   WinFspServiceContext(WinFspServiceContext&&) = delete;
@@ -68,7 +60,7 @@ class WinFspServiceContext {
 
   class FileProvider {
    public:
-    FileProvider(AbstractCloudProvider* provider, EventLoop* event_loop,
+    FileProvider(AbstractCloudProvider* provider, const EventLoop* event_loop,
                  ThreadPool* thread_pool, const wchar_t* mountpoint,
                  const wchar_t* prefix)
         : id_(reinterpret_cast<intptr_t>(provider)),
@@ -90,8 +82,8 @@ class WinFspServiceContext {
   class FileSystemContext {
    public:
     FileSystemContext(WinFspServiceContext* context)
-        : context_(context->event_base_.get()),
-          http_server_(context->event_base_.get(),
+        : context_(&context->event_loop_),
+          http_server_(&context->event_loop_,
                        SettingsManager(AuthTokenManager(context_.factory()))
                            .GetHttpServerConfig(),
                        context_.factory(), context_.thumbnail_generator(),
@@ -104,7 +96,7 @@ class WinFspServiceContext {
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
     ThreadPool* thread_pool() { return context_.thread_pool(); }
-    EventLoop* event_loop() { return context_.event_loop(); }
+    const EventLoop* event_loop() { return context_.event_loop(); }
 
     Task<> Quit() { return http_server_.Quit(); }
 
@@ -119,12 +111,12 @@ class WinFspServiceContext {
 
   class EventLoopThread {
    public:
-    EventLoopThread(event_base* event_base)
-        : event_base_(event_base),
+    EventLoopThread(EventLoop* event_loop)
+        : event_loop_(event_loop),
           event_loop_thread_(std::async(std::launch::async, [&] { Main(); })) {}
 
     ~EventLoopThread() {
-      event_base_loopexit(event_base_, nullptr);
+      event_loop_->ExitLoop();
       event_loop_thread_.get();
     }
 
@@ -132,14 +124,12 @@ class WinFspServiceContext {
     void Main() {
       try {
         coro::util::SetThreadName("event-loop");
-        if (event_base_loop(event_base_, EVLOOP_NO_EXIT_ON_EMPTY) == -1) {
-          throw std::runtime_error("event_base_dispatch error");
-        }
+        event_loop_->EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
       } catch (...) {
       }
     }
 
-    event_base* event_base_;
+    EventLoop* event_loop_;
     std::future<void> event_loop_thread_;
   };
 
@@ -160,9 +150,8 @@ class WinFspServiceContext {
     WinFspServiceContext* context_;
   };
 
-  std::unique_ptr<event_base, EventBaseDeleter> event_base_;
+  EventLoop event_loop_;
   EventLoopThread event_loop_thread_;
-  coro::util::EventLoop event_loop_;
   ContextWrapper fs_context_;
 };
 

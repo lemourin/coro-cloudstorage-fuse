@@ -42,13 +42,14 @@ auto GetSettingsManager(AbstractCloudFactory* factory,
 
 }  // namespace
 
-FileSystemContext::FileSystemContext(event_base* event_base, Config config)
-    : context_(event_base),
+FileSystemContext::FileSystemContext(const coro::util::EventLoop* event_loop,
+                                     Config config)
+    : context_(event_loop),
       provider_(CreateAbstractCloudProvider(&merged_provider_)),
       timing_out_provider_(context_.event_loop(), config.timeout_ms,
                            provider_.get()),
       fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config),
-      http_server_(event_base,
+      http_server_(context_.event_loop(),
                    GetSettingsManager(context_.factory(), config.config_path)
                        .GetHttpServerConfig(),
                    context_.factory(), context_.thumbnail_generator(),

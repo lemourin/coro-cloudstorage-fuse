@@ -20,7 +20,8 @@ class FileSystemContext {
     FileSystemProviderConfig fs_config;
   };
 
-  explicit FileSystemContext(event_base*, Config = {.timeout_ms = 10000});
+  explicit FileSystemContext(const coro::util::EventLoop* event_loop,
+                             Config = {.timeout_ms = 10000});
 
   const auto& fs() const { return fs_; }
   auto& fs() { return fs_; }

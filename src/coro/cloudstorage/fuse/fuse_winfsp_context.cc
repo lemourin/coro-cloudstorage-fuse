@@ -105,7 +105,7 @@ void ToFileInfo(const ItemContext& item, FSP_FSCTL_FILE_INFO* info) {
 FileSystemException::FileSystemException(HRESULT status)
     : status_(status), message_(GetErrorString(status)) {}
 
-WinFspContext::WinFspContext(coro::util::EventLoop* event_loop,
+WinFspContext::WinFspContext(const coro::util::EventLoop* event_loop,
                              FileSystemProvider* context,
                              const wchar_t* mountpoint, const wchar_t* prefix)
     : volume_params_({.SectorSize = kAllocationUnit,

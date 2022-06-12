@@ -29,8 +29,9 @@ class FileSystemException : public std::exception {
 
 class WinFspContext {
  public:
-  WinFspContext(coro::util::EventLoop* event_loop, FileSystemProvider* context,
-                const wchar_t* mountpoint, const wchar_t* prefix);
+  WinFspContext(const coro::util::EventLoop* event_loop,
+                FileSystemProvider* context, const wchar_t* mountpoint,
+                const wchar_t* prefix);
 
   WinFspContext(const WinFspContext&) = delete;
   WinFspContext(WinFspContext&&) = delete;
@@ -114,7 +115,7 @@ class WinFspContext {
 
   FSP_FSCTL_VOLUME_PARAMS volume_params_;
   FSP_FILE_SYSTEM_INTERFACE operations_;
-  coro::util::EventLoop* event_loop_;
+  const coro::util::EventLoop* event_loop_;
   FileSystemProvider* context_;
   stdx::stop_source stop_source_;
   std::unique_ptr<FSP_FILE_SYSTEM, FileSystemDeleter> filesystem_;

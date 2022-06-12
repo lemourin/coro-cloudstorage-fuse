@@ -1,11 +1,5 @@
 #ifdef WIN32
 
-#include <event2/event.h>
-#include <event2/thread.h>
-
-#undef CreateDirectory
-#undef CreateFile
-
 #include <future>
 #include <iostream>
 #include <sstream>
@@ -66,7 +60,7 @@ struct WideDebugStream : std::wstreambuf {
 struct WindowData {
   FSP_SERVICE* service;
   FileSystemContext* context;
-  coro::util::EventLoop* event_loop;
+  const coro::util::EventLoop* event_loop;
   coro::Promise<void> quit;
   std::promise<NTSTATUS> initialized;
 };
@@ -203,12 +197,12 @@ int MainWithWinFSP(HINSTANCE instance) {
   return service_thread.get();
 }
 
-Task<> CoRunWithNoWinFSP(WindowData* data, event_base* event_base) {
+Task<> CoRunWithNoWinFSP(WindowData* data,
+                         const coro::util::EventLoop* event_loop) {
   try {
-    FileSystemContext context{event_base};
-    coro::util::EventLoop loop{event_base};
+    FileSystemContext context{event_loop};
     data->context = &context;
-    data->event_loop = &loop;
+    data->event_loop = event_loop;
     data->initialized.set_value(STATUS_SUCCESS);
     co_await data->quit;
     co_await context.Quit();
@@ -223,10 +217,9 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   WindowData window_data{};
   auto service_thread = std::async(std::launch::async, [&] {
     coro::util::SetThreadName("event-loop");
-    evthread_use_windows_threads();
-    auto event_loop = Create<event_base_free>(event_base_new());
-    coro::RunTask(CoRunWithNoWinFSP(&window_data, event_loop.get()));
-    event_base_dispatch(event_loop.get());
+    coro::util::EventLoop event_loop;
+    coro::RunTask(CoRunWithNoWinFSP(&window_data, &event_loop));
+    event_loop.EnterLoop(coro::util::EventLoopType::ExitOnEmpty);
     return STATUS_SUCCESS;
   });
   window_data.initialized.get_future().get();
@@ -281,10 +274,6 @@ int MainWithNoWinFSP(HINSTANCE instance) {
 INT WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, PSTR cmd_line,
                    INT cmd_show) {
   try {
-    WORD version_requested = MAKEWORD(2, 2);
-    WSADATA wsa_data;
-    (void)WSAStartup(version_requested, &wsa_data);
-
     DebugStream debug_stream;
     std::cerr.rdbuf(&debug_stream);
     WideDebugStream wide_debug_stream;
