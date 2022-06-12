@@ -1,6 +1,5 @@
 #include "coro/cloudstorage/fuse/fuse_posix.h"
 
-#include <event2/thread.h>
 #include <fuse.h>
 #include <fuse_lowlevel.h>
 
@@ -18,7 +17,6 @@ namespace coro::cloudstorage::fuse {
 namespace {
 
 using ::coro::util::AtScopeExit;
-using ::coro::util::EventBaseDeleter;
 
 constexpr std::array<int, 2> kHandledSignals = {SIGINT, SIGTERM};
 
@@ -48,7 +46,8 @@ void OnSignal(evutil_socket_t, short, void* d) {
   }
 }
 
-Task<int> CoRun(int argc, char** argv, event_base* event_base) {
+Task<int> CoRun(int argc, char** argv,
+                const coro::util::EventLoop* event_loop) {
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
   std::unique_ptr<fuse_conn_info_opts, FreeDeleter> conn_opts(
@@ -87,16 +86,17 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
     });
     EventContext event_context{};
     for (size_t i = 0; i < signal_event.size(); i++) {
-      CheckEvent(event_assign(&signal_event[i], event_base, kHandledSignals[i],
-                              EV_SIGNAL, OnSignal, &event_context));
+      CheckEvent(event_assign(&signal_event[i], GetEventLoop(*event_loop),
+                              kHandledSignals[i], EV_SIGNAL, OnSignal,
+                              &event_context));
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
-    FileSystemContext fs_context(event_base);
+    FileSystemContext fs_context(event_loop);
     std::unique_ptr<FusePosixContext> context;
     int status = 0;
     try {
       context = co_await FusePosixContext::Create(
-          event_base, &fs_context.fs(), &args, &options, conn_opts.get(),
+          event_loop, &fs_context.fs(), &args, &options, conn_opts.get(),
           event_context.stop_source.get_token());
       event_context.context = context.get();
       if (fuse_daemonize(options.foreground) != 0) {
@@ -118,17 +118,11 @@ Task<int> CoRun(int argc, char** argv, event_base* event_base) {
 }  // namespace
 
 int Run(int argc, char** argv) {
-  std::unique_ptr<event_base, EventBaseDeleter> event_base([] {
-    evthread_use_pthreads();
-    return event_base_new();
-  }());
+  coro::util::EventLoop event_loop;
   int status = 0;
-  coro::RunTask([&]() -> Task<> {
-    status = co_await CoRun(argc, argv, event_base.get());
-  });
-  if (event_base_dispatch(event_base.get()) != 1) {
-    throw std::runtime_error("event_base_dispatch failed");
-  }
+  coro::RunTask(
+      [&]() -> Task<> { status = co_await CoRun(argc, argv, &event_loop); });
+  event_loop.EnterLoop();
   return status;
 }
 

@@ -76,12 +76,8 @@ else()
         target_compile_definitions(coro-cloudstorage-fuse PRIVATE CORO_CLOUDSTORAGE_FUSE2)
     endif()
 
-    target_link_libraries(coro-cloudstorage-fuse PRIVATE libevent::pthreads PkgConfig::fuse)
+    target_link_libraries(coro-cloudstorage-fuse PRIVATE PkgConfig::fuse)
     target_compile_definitions(coro-cloudstorage-fuse PRIVATE FUSE_USE_VERSION=39)
-endif()
-
-if(MSVC)
-    target_compile_options(coro-cloudstorage-fuse PRIVATE "/bigobj")
 endif()
 
 target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")

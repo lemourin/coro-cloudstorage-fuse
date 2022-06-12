@@ -5,8 +5,6 @@
 #include <event2/event_struct.h>
 #include <fuse_lowlevel.h>
 
-#include <iostream>
-
 #include "coro/cloudstorage/cloud_exception.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 #include "coro/cloudstorage/fuse/item_context.h"
@@ -14,6 +12,7 @@
 #include "coro/promise.h"
 #include "coro/stdx/stop_token.h"
 #include "coro/task.h"
+#include "coro/util/event_loop.h"
 #include "coro/util/function_traits.h"
 #include "coro/util/raii_utils.h"
 
@@ -22,9 +21,9 @@ namespace coro::cloudstorage::fuse {
 class FusePosixContext {
  public:
   static Task<std::unique_ptr<FusePosixContext>> Create(
-      event_base* event_base, FileSystemProvider* fs, fuse_args* fuse_args,
-      fuse_cmdline_opts* options, fuse_conn_info_opts* conn_opts,
-      stdx::stop_token stop_token);
+      const coro::util::EventLoop* event_loop, FileSystemProvider* fs,
+      fuse_args* fuse_args, fuse_cmdline_opts* options,
+      fuse_conn_info_opts* conn_opts, stdx::stop_token stop_token);
 
   FusePosixContext(const FusePosixContext&) = delete;
   FusePosixContext(FusePosixContext&&) = delete;
@@ -78,9 +77,10 @@ class FusePosixContext {
   };
 #endif
 
-  FusePosixContext(event_base* event_base, FileSystemProvider* fs,
-                   fuse_args* args, fuse_cmdline_opts* options,
-                   fuse_conn_info_opts* conn_opts, FuseFileContext root);
+  FusePosixContext(const coro::util::EventLoop* event_loop,
+                   FileSystemProvider* fs, fuse_args* args,
+                   fuse_cmdline_opts* options, fuse_conn_info_opts* conn_opts,
+                   FuseFileContext root);
 
   static fuse_lowlevel_ops GetFuseLowLevelOps();
 

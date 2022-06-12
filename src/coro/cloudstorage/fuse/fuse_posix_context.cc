@@ -4,6 +4,8 @@
 #include "coro/cloudstorage/fuse/fuse_posix_compat.h"
 #endif
 
+#include "coro/util/event_loop.h"
+
 namespace coro::cloudstorage::fuse {
 
 namespace {
@@ -171,7 +173,7 @@ FusePosixContext::FusePosixContext(event_base* event_base,
         }
       }) {}
 #else
-FusePosixContext::FusePosixContext(event_base* event_base,
+FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
                                    FileSystemProvider* fs, fuse_args* args,
                                    fuse_cmdline_opts* options,
                                    fuse_conn_info_opts* conn_opts,
@@ -186,7 +188,7 @@ FusePosixContext::FusePosixContext(event_base* event_base,
       }()) {
   file_context_.emplace(FUSE_ROOT_ID, std::move(root));
   Check(fuse_session_mount(session_.get(), options->mountpoint));
-  CheckEvent(event_assign(&fuse_event_, event_base,
+  CheckEvent(event_assign(&fuse_event_, GetEventLoop(*event_loop),
                           fuse_session_fd(session_.get()), EV_READ | EV_PERSIST,
                           HandleEvent, this));
   CheckEvent(event_add(&fuse_event_, nullptr));
@@ -213,11 +215,11 @@ void FusePosixContext::HandleEvent(evutil_socket_t fd, short, void* d) {
 #endif
 
 Task<std::unique_ptr<FusePosixContext>> FusePosixContext::Create(
-    event_base* event_base, FileSystemProvider* fs, fuse_args* fuse_args,
-    fuse_cmdline_opts* options, fuse_conn_info_opts* conn_opts,
-    stdx::stop_token stop_token) {
+    const coro::util::EventLoop* event_loop, FileSystemProvider* fs,
+    fuse_args* fuse_args, fuse_cmdline_opts* options,
+    fuse_conn_info_opts* conn_opts, stdx::stop_token stop_token) {
   co_return std::unique_ptr<FusePosixContext>(new FusePosixContext(
-      event_base, fs, fuse_args, options, conn_opts,
+      event_loop, fs, fuse_args, options, conn_opts,
       FuseFileContext{.context = co_await fs->GetRoot(std::move(stop_token))}));
 }
 
