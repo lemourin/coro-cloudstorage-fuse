@@ -121,7 +121,7 @@ fuse_lowlevel_ops FusePosixContext::GetFuseLowLevelOps() {
 }
 
 #ifdef CORO_CLOUDSTORAGE_FUSE2
-FusePosixContext::FusePosixContext(event_base* event_base,
+FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
                                    FileSystemProvider* fs, fuse_args* args,
                                    fuse_cmdline_opts* options,
                                    fuse_conn_info_opts* conn_opts,
@@ -150,7 +150,7 @@ FusePosixContext::FusePosixContext(event_base* event_base,
         fuse_session_add_chan(session, chan_.get());
         return session;
       }()),
-      service_thread_([&, event_loop = coro::util::EventLoop(event_base)] {
+      service_thread_([&, event_loop] {
         coro::util::SetThreadName("service-thread");
         size_t bufsize = fuse_chan_bufsize(chan_.get());
         std::unique_ptr<char[]> chunk(new char[bufsize]);
@@ -162,12 +162,12 @@ FusePosixContext::FusePosixContext(event_base* event_base,
           if (size < 0) {
             std::cerr << "FUSE ERROR: " << util::ErrorToString(-size) << "\n";
           } else {
-            event_loop.Do([&] {
+            event_loop->Do([&] {
               fuse_session_process_buf(session_.get(), &buffer, chan_.get());
             });
           }
           if (fuse_session_exited(session_.get())) {
-            event_loop.Do([&] { quit_.SetValue(); });
+            event_loop->Do([&] { quit_.SetValue(); });
             return;
           }
         }

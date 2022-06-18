@@ -7,6 +7,7 @@
 
 #include "coro/cloudstorage/cloud_exception.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
+#include "coro/cloudstorage/fuse/fuse_posix_compat.h"
 #include "coro/cloudstorage/fuse/item_context.h"
 #include "coro/cloudstorage/util/string_utils.h"
 #include "coro/promise.h"

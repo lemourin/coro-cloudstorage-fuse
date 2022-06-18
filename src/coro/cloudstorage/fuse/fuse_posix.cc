@@ -86,9 +86,10 @@ Task<int> CoRun(int argc, char** argv,
     });
     EventContext event_context{};
     for (size_t i = 0; i < signal_event.size(); i++) {
-      CheckEvent(event_assign(&signal_event[i], GetEventLoop(*event_loop),
-                              kHandledSignals[i], EV_SIGNAL, OnSignal,
-                              &event_context));
+      CheckEvent(event_assign(
+          &signal_event[i],
+          reinterpret_cast<event_base*>(GetEventLoop(*event_loop)),
+          kHandledSignals[i], EV_SIGNAL, OnSignal, &event_context));
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
     FileSystemContext fs_context(event_loop);
