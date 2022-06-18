@@ -32,7 +32,6 @@ using ::coro::cloudstorage::util::SettingsManager;
 using ::coro::cloudstorage::util::StrCat;
 using ::coro::cloudstorage::util::TimingOutCloudProvider;
 using ::coro::util::AtScopeExit;
-using ::coro::util::EventBaseDeleter;
 using ::coro::util::EventLoop;
 using ::coro::util::ThreadPool;
 
