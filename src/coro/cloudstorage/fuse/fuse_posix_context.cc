@@ -1,9 +1,5 @@
 #include "coro/cloudstorage/fuse/fuse_posix_context.h"
 
-#ifdef CORO_CLOUDSTORAGE_FUSE2
-#include "coro/cloudstorage/fuse/fuse_posix_compat.h"
-#endif
-
 #include "coro/util/event_loop.h"
 
 namespace coro::cloudstorage::fuse {
@@ -188,9 +184,10 @@ FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
       }()) {
   file_context_.emplace(FUSE_ROOT_ID, std::move(root));
   Check(fuse_session_mount(session_.get(), options->mountpoint));
-  CheckEvent(event_assign(&fuse_event_, GetEventLoop(*event_loop),
-                          fuse_session_fd(session_.get()), EV_READ | EV_PERSIST,
-                          HandleEvent, this));
+  CheckEvent(event_assign(
+      &fuse_event_, reinterpret_cast<event_base*>(GetEventLoop(*event_loop)),
+      fuse_session_fd(session_.get()), EV_READ | EV_PERSIST, HandleEvent,
+      this));
   CheckEvent(event_add(&fuse_event_, nullptr));
 }
 

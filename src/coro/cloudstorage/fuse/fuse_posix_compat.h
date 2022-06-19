@@ -1,6 +1,8 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_COMPAT_H
 #define CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_COMPAT_H
 
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+
 #include <fuse_lowlevel.h>
 
 namespace coro::cloudstorage::fuse {
@@ -25,5 +27,7 @@ void fuse_lib_help(struct fuse_args*);
 void fuse_lowlevel_version();
 
 }  // namespace coro::cloudstorage::fuse
+
+#endif
 
 #endif  // CORO_CLOUDSTORAGE_FUSE_FUSE_POSIX_COMPAT_H

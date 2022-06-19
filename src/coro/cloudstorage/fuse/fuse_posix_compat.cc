@@ -1,5 +1,7 @@
 #include "coro/cloudstorage/fuse/fuse_posix_compat.h"
 
+#ifdef CORO_CLOUDSTORAGE_FUSE2
+
 namespace coro::cloudstorage::fuse {
 
 struct fuse_conn_info_opts* fuse_parse_conn_info_opts(struct fuse_args*) {
@@ -18,3 +20,5 @@ void fuse_lib_help(struct fuse_args*) {}
 void fuse_lowlevel_version() {}
 
 }  // namespace coro::cloudstorage::fuse
+
+#endif
