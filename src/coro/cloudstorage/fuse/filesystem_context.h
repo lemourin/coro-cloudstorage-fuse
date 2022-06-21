@@ -3,6 +3,7 @@
 
 #include "coro/cloudstorage/cloud_factory.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
+#include "coro/cloudstorage/util/abstract_cloud_provider_impl.h"
 #include "coro/cloudstorage/util/account_manager_handler.h"
 #include "coro/cloudstorage/util/cloud_factory_context.h"
 #include "coro/cloudstorage/util/merged_cloud_provider.h"
@@ -31,7 +32,7 @@ class FileSystemContext {
  private:
   util::CloudFactoryContext context_;
   util::MergedCloudProvider merged_provider_;
-  std::unique_ptr<util::AbstractCloudProvider> provider_;
+  decltype(util::CreateAbstractCloudProviderImpl(&merged_provider_)) provider_;
   util::TimingOutCloudProvider timing_out_provider_;
   FileSystemProvider fs_;
   coro::http::HttpServer<util::AccountManagerHandler> http_server_;

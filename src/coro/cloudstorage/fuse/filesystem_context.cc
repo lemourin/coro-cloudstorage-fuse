@@ -45,9 +45,9 @@ auto GetSettingsManager(AbstractCloudFactory* factory,
 FileSystemContext::FileSystemContext(const coro::util::EventLoop* event_loop,
                                      Config config)
     : context_(event_loop),
-      provider_(CreateAbstractCloudProvider(&merged_provider_)),
+      provider_(CreateAbstractCloudProviderImpl(&merged_provider_)),
       timing_out_provider_(context_.event_loop(), config.timeout_ms,
-                           provider_.get()),
+                           &provider_),
       fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config),
       http_server_(context_.event_loop(),
                    GetSettingsManager(context_.factory(), config.config_path)
