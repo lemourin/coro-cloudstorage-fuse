@@ -81,13 +81,10 @@ class WinFspServiceContext {
   class FileSystemContext {
    public:
     FileSystemContext(WinFspServiceContext* context)
-        : context_(&context->event_loop_),
-          http_server_(&context->event_loop_,
-                       SettingsManager(AuthTokenManager(context_.factory()))
-                           .GetHttpServerConfig(),
-                       context_.factory(), context_.thumbnail_generator(),
-                       CloudProviderAccountListener{this},
-                       SettingsManager(AuthTokenManager(context_.factory()))) {}
+        : event_loop_(&context->event_loop_),
+          context_(&context->event_loop_),
+          http_server_(
+              context_.CreateHttpServer(CloudProviderAccountListener{this})) {}
 
     FileSystemContext(const FileSystemContext&) = delete;
     FileSystemContext(FileSystemContext&&) = delete;
@@ -95,13 +92,14 @@ class WinFspServiceContext {
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
     ThreadPool* thread_pool() { return context_.thread_pool(); }
-    const EventLoop* event_loop() { return context_.event_loop(); }
+    const EventLoop* event_loop() { return event_loop_; }
 
     Task<> Quit() { return http_server_.Quit(); }
 
    private:
     friend struct CloudProviderAccountListener;
 
+    const EventLoop* event_loop_;
     CloudFactoryContext context_;
     std::mutex mutex_;
     std::list<FileProvider> contexts_;
