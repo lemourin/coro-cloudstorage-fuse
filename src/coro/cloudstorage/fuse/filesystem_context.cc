@@ -12,7 +12,8 @@ using ::coro::cloudstorage::util::GetConfigFilePath;
 
 struct ForwardToMergedCloudProvider {
   void OnCreate(util::CloudProviderAccount* account) {
-    provider->AddAccount(std::string(account->id()), &account->provider());
+    provider->AddAccount(std::string(account->username()),
+                         &account->provider());
   }
 
   Task<> OnDestroy(util::CloudProviderAccount* account) {
