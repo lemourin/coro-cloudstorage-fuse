@@ -171,7 +171,8 @@ void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
       ToWideString(
           util::StrCat("\\", account->type(), "\\", account->username()))
           .c_str());
-  std::cerr << "CREATE " << account->id() << "\n";
+  std::cerr << "CREATE [" << account->type() << "] " << account->username()
+            << '\n';
 }
 
 Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
@@ -188,7 +189,8 @@ Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
       contexts.erase(it);
     }
   });
-  std::cerr << "DESTROY " << account->id() << "\n";
+  std::cerr << "DESTROY [" << account->type() << "] " << account->username()
+            << '\n';
 }
 
 }  // namespace
