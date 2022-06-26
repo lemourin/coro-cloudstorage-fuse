@@ -237,10 +237,10 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
                    reinterpret_cast<LONG_PTR>(&window_data));
 
-  NETRESOURCE netresource = {
-      .dwType = RESOURCETYPE_DISK,
-      .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
-      .lpRemoteName = const_cast<LPTSTR>(TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI))};
+  NETRESOURCE netresource = {.dwType = RESOURCETYPE_DISK,
+                             .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
+                             .lpRemoteName = const_cast<LPTSTR>(
+                                 TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI "/list"))};
   Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/TEXT(""),
                            /*lpUserName=*/nullptr, /*dwFlags=*/0),
         TEXT("WNetAddConnection3"));
