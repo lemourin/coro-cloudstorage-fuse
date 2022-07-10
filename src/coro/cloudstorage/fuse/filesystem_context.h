@@ -19,6 +19,7 @@ class FileSystemContext {
     int timeout_ms;
     std::optional<std::string> config_path;
     FileSystemProviderConfig fs_config;
+    http::CacheHttpConfig cache_http_config;
   };
 
   explicit FileSystemContext(const coro::util::EventLoop* event_loop,
