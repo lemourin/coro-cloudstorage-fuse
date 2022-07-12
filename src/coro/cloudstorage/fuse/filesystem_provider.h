@@ -1,7 +1,6 @@
 #ifndef CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 #define CORO_CLOUDSTORAGE_FUSE_FILESYSTEM_PROVIDER_H
 
-#include <iostream>
 #include <memory>
 #include <optional>
 

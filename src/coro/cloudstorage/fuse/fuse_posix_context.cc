@@ -1,5 +1,7 @@
 #include "coro/cloudstorage/fuse/fuse_posix_context.h"
 
+#include <iostream>
+
 #include "coro/util/event_loop.h"
 
 namespace coro::cloudstorage::fuse {

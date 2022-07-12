@@ -3,6 +3,8 @@
 #undef CreateDirectory
 #undef CreateFile
 
+#include <iostream>
+
 #include "coro/cloudstorage/cloud_exception.h"
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 

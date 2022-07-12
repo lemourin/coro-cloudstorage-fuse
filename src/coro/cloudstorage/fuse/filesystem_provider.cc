@@ -1,5 +1,7 @@
 #include "coro/cloudstorage/fuse/filesystem_provider.h"
 
+#include <iostream>
+
 #include "coro/cloudstorage/util/cloud_provider_utils.h"
 
 namespace coro::cloudstorage::fuse {
