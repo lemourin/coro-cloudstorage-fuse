@@ -8,15 +8,16 @@ namespace coro::cloudstorage::fuse {
 
 namespace {
 
+using ::coro::cloudstorage::util::CloudProviderAccount;
 using ::coro::cloudstorage::util::GetConfigFilePath;
 
 struct ForwardToMergedCloudProvider {
-  void OnCreate(util::CloudProviderAccount* account) {
+  void OnCreate(const std::shared_ptr<CloudProviderAccount>& account) {
     provider->AddAccount(std::string(account->username()),
                          &account->provider());
   }
 
-  Task<> OnDestroy(util::CloudProviderAccount* account) {
+  Task<> OnDestroy(const std::shared_ptr<CloudProviderAccount>& account) {
     provider->RemoveAccount(&account->provider());
     co_return;
   }
