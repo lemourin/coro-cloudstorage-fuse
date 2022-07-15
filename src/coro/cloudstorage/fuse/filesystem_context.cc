@@ -10,19 +10,19 @@ namespace {
 
 using ::coro::cloudstorage::util::CloudProviderAccount;
 using ::coro::cloudstorage::util::GetConfigFilePath;
+using ::coro::cloudstorage::util::MergedCloudProvider;
 
 struct ForwardToMergedCloudProvider {
   void OnCreate(const std::shared_ptr<CloudProviderAccount>& account) {
-    provider->AddAccount(std::string(account->username()),
-                         &account->provider());
+    provider->AddAccount(std::string(account->username()), account->provider());
   }
 
   Task<> OnDestroy(const std::shared_ptr<CloudProviderAccount>& account) {
-    provider->RemoveAccount(&account->provider());
+    provider->RemoveAccount(account->provider());
     co_return;
   }
 
-  util::MergedCloudProvider* provider;
+  MergedCloudProvider* provider;
 };
 
 }  // namespace
