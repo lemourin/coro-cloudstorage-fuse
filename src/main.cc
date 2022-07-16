@@ -197,20 +197,15 @@ int MainWithWinFSP(HINSTANCE instance) {
   return service_thread.get();
 }
 
-Task<> CoRunWithNoWinFSP(WindowData* data,
-                         const coro::util::EventLoop* event_loop) {
+Task<> CoRunWithNoWinFSP(WindowData* data, FileSystemContext* context) {
   try {
-    FileSystemContext context{event_loop};
-    data->context = &context;
-    data->event_loop = event_loop;
+    auto http_server = context->CreateHttpServer();
     data->initialized.set_value(STATUS_SUCCESS);
     co_await data->quit;
-    co_await context.Quit();
+    co_await http_server.Quit();
   } catch (...) {
     data->initialized.set_exception(std::current_exception());
   }
-  data->context = nullptr;
-  data->event_loop = nullptr;
 }
 
 int MainWithNoWinFSP(HINSTANCE instance) {
@@ -218,8 +213,13 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   auto service_thread = std::async(std::launch::async, [&] {
     coro::util::SetThreadName("event-loop");
     coro::util::EventLoop event_loop;
-    coro::RunTask(CoRunWithNoWinFSP(&window_data, &event_loop));
+    FileSystemContext context(&event_loop);
+    window_data.context = &context;
+    window_data.event_loop = &event_loop;
+    coro::RunTask(CoRunWithNoWinFSP(&window_data, &context));
     event_loop.EnterLoop(coro::util::EventLoopType::ExitOnEmpty);
+    window_data.context = nullptr;
+    window_data.event_loop = nullptr;
     return STATUS_SUCCESS;
   });
   window_data.initialized.get_future().get();

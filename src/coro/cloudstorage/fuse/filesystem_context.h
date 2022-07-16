@@ -28,7 +28,7 @@ class FileSystemContext {
   const auto& fs() const { return fs_; }
   auto& fs() { return fs_; }
 
-  Task<> Quit() { return http_server_.Quit(); }
+  http::HttpServer<util::AccountManagerHandler> CreateHttpServer();
 
  private:
   util::CloudFactoryContext context_;
@@ -36,7 +36,6 @@ class FileSystemContext {
   decltype(util::CreateAbstractCloudProviderImpl(&merged_provider_)) provider_;
   util::TimingOutCloudProvider timing_out_provider_;
   FileSystemProvider fs_;
-  coro::http::HttpServer<util::AccountManagerHandler> http_server_;
 };
 
 }  // namespace coro::cloudstorage::fuse

@@ -17,9 +17,8 @@ struct ForwardToMergedCloudProvider {
     provider->AddAccount(std::string(account->username()), account->provider());
   }
 
-  Task<> OnDestroy(const std::shared_ptr<CloudProviderAccount>& account) {
+  void OnDestroy(const std::shared_ptr<CloudProviderAccount>& account) {
     provider->RemoveAccount(account->provider());
-    co_return;
   }
 
   MergedCloudProvider* provider;
@@ -33,8 +32,12 @@ FileSystemContext::FileSystemContext(const coro::util::EventLoop* event_loop,
                std::move(config.config_path).value_or(GetConfigFilePath())),
       provider_(CreateAbstractCloudProviderImpl(&merged_provider_)),
       timing_out_provider_(event_loop, config.timeout_ms, &provider_),
-      fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config),
-      http_server_(context_.CreateHttpServer(
-          ForwardToMergedCloudProvider{&merged_provider_})) {}
+      fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config) {}
+
+http::HttpServer<util::AccountManagerHandler>
+FileSystemContext::CreateHttpServer() {
+  return context_.CreateHttpServer(
+      ForwardToMergedCloudProvider{&merged_provider_});
+}
 
 }  // namespace coro::cloudstorage::fuse

@@ -5,6 +5,7 @@
 #undef CreateDirectory
 #undef CreateFile
 
+#include <deque>
 #include <future>
 #include <iostream>
 #include <optional>
@@ -35,6 +36,16 @@ using ::coro::util::AtScopeExit;
 using ::coro::util::EventLoop;
 using ::coro::util::ThreadPool;
 
+std::wstring ToWideString(std::string_view input) {
+  int length = MultiByteToWideChar(
+      CP_UTF8, 0, input.data(), static_cast<int>(input.length()), nullptr, 0);
+  std::wstring buffer(length, 0);
+  MultiByteToWideChar(CP_UTF8, 0, input.data(),
+                      static_cast<int>(input.length()), buffer.data(),
+                      static_cast<int>(buffer.length()));
+  return buffer;
+}
+
 class WinFspServiceContext {
  public:
   WinFspServiceContext()
@@ -51,29 +62,29 @@ class WinFspServiceContext {
   using HttpT = http::CacheHttp;
 
   struct CloudProviderAccountListener {
-    void OnCreate(CloudProviderAccount* account);
-    Task<> OnDestroy(CloudProviderAccount* account);
+    void OnCreate(std::shared_ptr<CloudProviderAccount> account);
+    void OnDestroy(std::shared_ptr<CloudProviderAccount> account);
 
     FileSystemContext* context;
   };
 
   class FileProvider {
    public:
-    FileProvider(AbstractCloudProvider* provider, const EventLoop* event_loop,
-                 ThreadPool* thread_pool, const wchar_t* mountpoint,
-                 const wchar_t* prefix)
-        : id_(reinterpret_cast<intptr_t>(provider)),
-          provider_(std::make_unique<TimingOutCloudProvider>(event_loop, 10000,
-                                                             provider)),
-          fs_provider_(provider_.get(), thread_pool,
-                       FileSystemProviderConfig()),
+    FileProvider(std::shared_ptr<AbstractCloudProvider> provider,
+                 const EventLoop* event_loop, ThreadPool* thread_pool,
+                 const wchar_t* mountpoint, const wchar_t* prefix)
+        : base_provider_(std::move(provider)),
+          provider_(event_loop, 10000, base_provider_.get()),
+          fs_provider_(&provider_, thread_pool, FileSystemProviderConfig()),
           context_(event_loop, &fs_provider_, mountpoint, prefix) {}
 
-    intptr_t GetId() const { return id_; }
+    intptr_t GetId() const {
+      return reinterpret_cast<intptr_t>(base_provider_.get());
+    }
 
    private:
-    intptr_t id_;
-    std::unique_ptr<AbstractCloudProvider> provider_;
+    std::shared_ptr<AbstractCloudProvider> base_provider_;
+    TimingOutCloudProvider provider_;
     FileSystemProvider fs_provider_;
     WinFspContext context_;
   };
@@ -83,6 +94,8 @@ class WinFspServiceContext {
     FileSystemContext(WinFspServiceContext* context)
         : event_loop_(&context->event_loop_),
           context_(&context->event_loop_),
+          background_thread_(
+              std::async(std::launch::async, [&] { RunBackgroundThread(); })),
           http_server_(
               context_.CreateHttpServer(CloudProviderAccountListener{this})) {}
 
@@ -91,18 +104,75 @@ class WinFspServiceContext {
     FileSystemContext& operator=(const FileSystemContext&) = delete;
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
+    ~FileSystemContext() {
+      {
+        std::unique_lock lock{mutex_};
+        quit_ = true;
+        condition_variable_.notify_one();
+      }
+      background_thread_.get();
+    }
+
     ThreadPool* thread_pool() { return context_.thread_pool(); }
     const EventLoop* event_loop() { return event_loop_; }
+
+    void AddAccount(std::shared_ptr<CloudProviderAccount> account) {
+      std::unique_lock lock{mutex_};
+      contexts_.emplace_back(
+          account->provider(), event_loop(), thread_pool(), nullptr,
+          ToWideString(
+              util::StrCat("\\", account->type(), "\\", account->username()))
+              .c_str());
+    }
+
+    void RemoveAccount(std::shared_ptr<CloudProviderAccount> account) {
+      std::unique_lock lock{mutex_};
+      tasks_.emplace_back([this, account = std::move(account)] {
+        auto it = std::find_if(
+            contexts_.begin(), contexts_.end(), [&](const auto& provider) {
+              return provider.GetId() ==
+                     reinterpret_cast<intptr_t>(account->provider().get());
+            });
+        if (it != contexts_.end()) {
+          contexts_.erase(it);
+        }
+      });
+      condition_variable_.notify_one();
+    }
 
     Task<> Quit() { return http_server_.Quit(); }
 
    private:
     friend struct CloudProviderAccountListener;
 
+    void RunBackgroundThread() {
+      coro::util::SetThreadName("background-thread");
+
+      while (true) {
+        std::unique_lock lock{mutex_};
+        condition_variable_.wait(lock,
+                                 [&] { return quit_ || !tasks_.empty(); });
+        if (quit_) {
+          break;
+        }
+        while (!tasks_.empty()) {
+          auto task = std::move(*tasks_.begin());
+          tasks_.pop_front();
+          lock.unlock();
+          std::move(task)();
+          lock.lock();
+        }
+      }
+    }
+
     const EventLoop* event_loop_;
     CloudFactoryContext context_;
+    bool quit_;
     std::mutex mutex_;
+    std::condition_variable condition_variable_;
+    std::deque<stdx::any_invocable<void() &&>> tasks_;
     std::list<FileProvider> contexts_;
+    std::future<void> background_thread_;
     coro::http::HttpServer<AccountManagerHandler> http_server_;
   };
 
@@ -152,45 +222,18 @@ class WinFspServiceContext {
   ContextWrapper fs_context_;
 };
 
-std::wstring ToWideString(std::string_view input) {
-  int length = MultiByteToWideChar(
-      CP_UTF8, 0, input.data(), static_cast<int>(input.length()), nullptr, 0);
-  std::wstring buffer(length, 0);
-  MultiByteToWideChar(CP_UTF8, 0, input.data(),
-                      static_cast<int>(input.length()), buffer.data(),
-                      static_cast<int>(buffer.length()));
-  return buffer;
-}
-
 void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
-    CloudProviderAccount* account) {
-  std::unique_lock lock{context->mutex_};
-  context->contexts_.emplace_back(
-      &account->provider(), context->event_loop(), context->thread_pool(),
-      nullptr,
-      ToWideString(
-          util::StrCat("\\", account->type(), "\\", account->username()))
-          .c_str());
+    std::shared_ptr<CloudProviderAccount> account) {
   std::cerr << "CREATE [" << account->type() << "] " << account->username()
             << '\n';
+  context->AddAccount(std::move(account));
 }
 
-Task<> WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
-    CloudProviderAccount* account) {
-  co_await context->thread_pool()->Do([&] {
-    std::unique_lock lock{context->mutex_};
-    auto& contexts = context->contexts_;
-    auto it = std::find_if(
-        contexts.begin(), contexts.end(), [&](const auto& provider) {
-          return provider.GetId() ==
-                 reinterpret_cast<intptr_t>(&account->provider());
-        });
-    if (it != contexts.end()) {
-      contexts.erase(it);
-    }
-  });
+void WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
+    std::shared_ptr<CloudProviderAccount> account) {
   std::cerr << "DESTROY [" << account->type() << "] " << account->username()
             << '\n';
+  context->RemoveAccount(std::move(account));
 }
 
 }  // namespace

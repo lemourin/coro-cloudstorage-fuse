@@ -161,7 +161,8 @@ WinFspContext::WinFspContext(const coro::util::EventLoop* event_loop,
       }()) {}
 
 WinFspContext::~WinFspContext() {
-  event_loop_->Do([&] { stop_source_.request_stop(); });
+  event_loop_->RunOnEventLoop(
+      [stop_source = stop_source_]() mutable { stop_source.request_stop(); });
 }
 
 void WinFspContext::FileSystemDeleter::operator()(
