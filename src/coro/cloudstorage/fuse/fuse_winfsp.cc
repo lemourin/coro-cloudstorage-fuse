@@ -49,12 +49,26 @@ std::wstring ToWideString(std::string_view input) {
 class WinFspServiceContext {
  public:
   WinFspServiceContext()
-      : event_loop_thread_(&event_loop_), fs_context_(this) {}
+      : event_loop_thread_(std::async(std::launch::async, [&] {
+          try {
+            coro::util::SetThreadName("event-loop");
+            event_loop_.EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
+          } catch (...) {
+          }
+        })) {
+    event_loop_.Do([&] { fs_context_.emplace(this); });
+  }
 
   WinFspServiceContext(const WinFspServiceContext&) = delete;
   WinFspServiceContext(WinFspServiceContext&&) = delete;
   WinFspServiceContext& operator=(const WinFspServiceContext&) = delete;
   WinFspServiceContext& operator=(WinFspServiceContext&&) = delete;
+
+  ~WinFspServiceContext() {
+    event_loop_.Do([&]() -> Task<> { co_await fs_context_->Quit(); });
+    event_loop_.ExitLoop();
+    event_loop_thread_.get();
+  }
 
  private:
   class FileSystemContext;
@@ -176,50 +190,9 @@ class WinFspServiceContext {
     coro::http::HttpServer<AccountManagerHandler> http_server_;
   };
 
-  class EventLoopThread {
-   public:
-    EventLoopThread(EventLoop* event_loop)
-        : event_loop_(event_loop),
-          event_loop_thread_(std::async(std::launch::async, [&] { Main(); })) {}
-
-    ~EventLoopThread() {
-      event_loop_->ExitLoop();
-      event_loop_thread_.get();
-    }
-
-   private:
-    void Main() {
-      try {
-        coro::util::SetThreadName("event-loop");
-        event_loop_->EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
-      } catch (...) {
-      }
-    }
-
-    EventLoop* event_loop_;
-    std::future<void> event_loop_thread_;
-  };
-
-  class ContextWrapper : public std::optional<FileSystemContext> {
-   public:
-    ContextWrapper(WinFspServiceContext* context) : context_(context) {
-      context_->event_loop_.Do([&] { emplace(context); });
-    }
-
-    ~ContextWrapper() {
-      context_->event_loop_.Do([&]() -> Task<> {
-        co_await(*this)->Quit();
-        reset();
-      });
-    }
-
-   private:
-    WinFspServiceContext* context_;
-  };
-
   EventLoop event_loop_;
-  EventLoopThread event_loop_thread_;
-  ContextWrapper fs_context_;
+  std::optional<FileSystemContext> fs_context_;
+  std::future<void> event_loop_thread_;
 };
 
 void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
