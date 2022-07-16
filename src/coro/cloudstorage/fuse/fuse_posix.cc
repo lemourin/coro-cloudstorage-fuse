@@ -46,8 +46,8 @@ void OnSignal(evutil_socket_t, short, void* d) {
   }
 }
 
-Task<int> CoRun(int argc, char** argv,
-                const coro::util::EventLoop* event_loop) {
+Task<int> CoRun(int argc, char** argv, const coro::util::EventLoop* event_loop,
+                FileSystemContext* fs_context) {
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
   std::unique_ptr<fuse_conn_info_opts, FreeDeleter> conn_opts(
@@ -92,12 +92,12 @@ Task<int> CoRun(int argc, char** argv,
           kHandledSignals[i], EV_SIGNAL, OnSignal, &event_context));
       CheckEvent(event_add(&signal_event[i], nullptr));
     }
-    FileSystemContext fs_context(event_loop);
+    auto http_server = fs_context->CreateHttpServer();
     std::unique_ptr<FusePosixContext> context;
     int status = 0;
     try {
       context = co_await FusePosixContext::Create(
-          event_loop, &fs_context.fs(), &args, &options, conn_opts.get(),
+          event_loop, &fs_context->fs(), &args, &options, conn_opts.get(),
           event_context.stop_source.get_token());
       event_context.context = context.get();
       if (fuse_daemonize(options.foreground) != 0) {
@@ -108,7 +108,7 @@ Task<int> CoRun(int argc, char** argv,
       std::cerr << "EXCEPTION " << e.what() << "\n";
       status = -1;
     }
-    co_await fs_context.Quit();
+    co_await http_server.Quit();
     co_return status;
   } catch (const std::exception& e) {
     std::cerr << "EXCEPTION " << e.what() << "\n";
@@ -120,9 +120,11 @@ Task<int> CoRun(int argc, char** argv,
 
 int Run(int argc, char** argv) {
   coro::util::EventLoop event_loop;
+  FileSystemContext fs_context(&event_loop);
   int status = 0;
-  coro::RunTask(
-      [&]() -> Task<> { status = co_await CoRun(argc, argv, &event_loop); });
+  coro::RunTask([&]() -> Task<> {
+    status = co_await CoRun(argc, argv, &event_loop, &fs_context);
+  });
   event_loop.EnterLoop();
   return status;
 }
