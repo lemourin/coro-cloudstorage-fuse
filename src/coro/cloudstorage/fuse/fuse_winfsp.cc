@@ -132,16 +132,21 @@ class WinFspServiceContext {
 
     void AddAccount(std::shared_ptr<CloudProviderAccount> account) {
       std::unique_lock lock{mutex_};
-      contexts_.emplace_back(
-          account->provider(), event_loop(), thread_pool(), nullptr,
-          ToWideString(
-              util::StrCat("\\", account->type(), "\\", account->username()))
-              .c_str());
+      tasks_.emplace_back([this, account = std::move(account)] {
+        std::unique_lock lock{mutex_};
+        contexts_.emplace_back(
+            account->provider(), event_loop(), thread_pool(), nullptr,
+            ToWideString(
+                util::StrCat("\\", account->type(), "\\", account->username()))
+                .c_str());
+      });
+      condition_variable_.notify_one();
     }
 
     void RemoveAccount(std::shared_ptr<CloudProviderAccount> account) {
       std::unique_lock lock{mutex_};
       tasks_.emplace_back([this, account = std::move(account)] {
+        std::unique_lock lock{mutex_};
         auto it = std::find_if(
             contexts_.begin(), contexts_.end(), [&](const auto& provider) {
               return provider.GetId() ==
@@ -166,9 +171,6 @@ class WinFspServiceContext {
         std::unique_lock lock{mutex_};
         condition_variable_.wait(lock,
                                  [&] { return quit_ || !tasks_.empty(); });
-        if (quit_) {
-          break;
-        }
         while (!tasks_.empty()) {
           auto task = std::move(*tasks_.begin());
           tasks_.pop_front();
@@ -176,12 +178,15 @@ class WinFspServiceContext {
           std::move(task)();
           lock.lock();
         }
+        if (quit_) {
+          break;
+        }
       }
     }
 
     const EventLoop* event_loop_;
     CloudFactoryContext context_;
-    bool quit_;
+    bool quit_ = false;
     std::mutex mutex_;
     std::condition_variable condition_variable_;
     std::deque<stdx::any_invocable<void() &&>> tasks_;
