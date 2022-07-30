@@ -105,7 +105,7 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
 tstring NtStatusToString(NTSTATUS status) {
   auto ntdll = Create<FreeLibrary>(LoadLibrary(TEXT("NTDLL.DLL")));
   if (!ntdll) {
-    throw std::runtime_error("LoadLibrary error");
+    throw coro::RuntimeError("LoadLibrary error");
   }
   TCHAR* message;
   DWORD result = FormatMessage(
@@ -129,7 +129,7 @@ void Check(NTSTATUS status, const TCHAR* func) {
       error << TEXT("\n") << status_string;
     }
     MessageBox(nullptr, error.str().c_str(), nullptr, MB_OK | MB_ICONERROR);
-    throw std::runtime_error("Check error");
+    throw coro::RuntimeError("Check error");
   }
 }
 

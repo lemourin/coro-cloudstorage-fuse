@@ -9,13 +9,14 @@
 #include <stdexcept>
 #include <string>
 
+#include "coro/exception.h"
 #include "coro/util/event_loop.h"
 
 namespace coro::cloudstorage::fuse {
 
 class FileSystemProvider;
 
-class FileSystemException : public std::exception {
+class FileSystemException : public Exception {
  public:
   explicit FileSystemException(HRESULT status);
 

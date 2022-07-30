@@ -50,7 +50,7 @@ std::string GetErrorString(HRESULT r) {
 std::pair<std::string, std::string> SplitPath(std::string_view path) {
   auto it = path.find_last_of('/');
   if (it == std::string::npos) {
-    throw std::invalid_argument("invalid path");
+    throw InvalidArgument("invalid path");
   }
   return {
       std::string(path.begin(), path.begin() + it),

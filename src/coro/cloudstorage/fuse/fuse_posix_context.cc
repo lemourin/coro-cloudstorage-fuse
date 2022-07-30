@@ -2,6 +2,7 @@
 
 #include <iostream>
 
+#include "coro/exception.h"
 #include "coro/util/event_loop.h"
 
 namespace coro::cloudstorage::fuse {
@@ -38,13 +39,13 @@ off_t EncodeReadDirToken(ReadDirToken token) {
 
 void Check(int d) {
   if (d != 0) {
-    throw std::runtime_error(util::ErrorToString(d));
+    throw RuntimeError(util::ErrorToString(d));
   }
 }
 
 void CheckEvent(int d) {
   if (d != 0) {
-    throw std::runtime_error("libevent error");
+    throw RuntimeError("libevent error");
   }
 }
 
@@ -135,7 +136,7 @@ FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
       chan_([&] {
         auto* chan = fuse_mount(options->mountpoint, args);
         if (!chan) {
-          throw std::runtime_error("fuse_mount failed");
+          throw RuntimeError("fuse_mount failed");
         }
         return chan;
       }()),
@@ -143,7 +144,7 @@ FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
         auto* session = fuse_lowlevel_new(args, &operations_,
                                           sizeof(fuse_lowlevel_ops), this);
         if (!session) {
-          throw std::runtime_error("couldn't create fuse_session");
+          throw RuntimeError("couldn't create fuse_session");
         }
         fuse_session_add_chan(session, chan_.get());
         return session;
@@ -180,7 +181,7 @@ FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
         auto* session = fuse_session_new(args, &operations_,
                                          sizeof(fuse_lowlevel_ops), this);
         if (!session) {
-          throw std::runtime_error("fuse_session_new failed");
+          throw RuntimeError("fuse_session_new failed");
         }
         return session;
       }()) {

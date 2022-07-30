@@ -34,7 +34,7 @@ struct EventContext {
 
 void CheckEvent(int d) {
   if (d != 0) {
-    throw std::runtime_error("libevent error");
+    throw RuntimeError("libevent error");
   }
 }
 
@@ -101,7 +101,7 @@ Task<int> CoRun(int argc, char** argv, const coro::util::EventLoop* event_loop,
           event_context.stop_source.get_token());
       event_context.context = context.get();
       if (fuse_daemonize(options.foreground) != 0) {
-        throw std::runtime_error("fuse_daemonize failed");
+        throw RuntimeError("fuse_daemonize failed");
       }
       co_await context->Run();
     } catch (const std::exception& e) {
