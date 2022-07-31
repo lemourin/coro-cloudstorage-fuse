@@ -46,6 +46,59 @@ std::wstring ToWideString(std::string_view input) {
   return buffer;
 }
 
+class SequentialExecutor {
+ public:
+  SequentialExecutor()
+      : background_thread_(
+            std::async(std::launch::async, [&] { RunBackgroundThread(); })) {}
+
+  ~SequentialExecutor() { Stop(); }
+
+  void Run(stdx::any_invocable<void() &&> cb) {
+    std::unique_lock lock{tasks_mutex_};
+    tasks_.emplace_back(std::move(cb));
+    condition_variable_.notify_one();
+  }
+
+  void Stop() {
+    {
+      std::unique_lock lock{tasks_mutex_};
+      if (quit_) {
+        return;
+      }
+      quit_ = true;
+      condition_variable_.notify_one();
+    }
+    background_thread_.get();
+  }
+
+ private:
+  void RunBackgroundThread() {
+    coro::util::SetThreadName("background-thread");
+
+    while (true) {
+      std::unique_lock lock{tasks_mutex_};
+      condition_variable_.wait(lock, [&] { return quit_ || !tasks_.empty(); });
+      while (!tasks_.empty()) {
+        auto task = std::move(*tasks_.begin());
+        tasks_.pop_front();
+        lock.unlock();
+        std::move(task)();
+        lock.lock();
+      }
+      if (quit_) {
+        break;
+      }
+    }
+  }
+
+  bool quit_ = false;
+  std::condition_variable condition_variable_;
+  std::mutex tasks_mutex_;
+  std::deque<stdx::any_invocable<void() &&>> tasks_;
+  std::future<void> background_thread_;
+};
+
 class WinFspServiceContext {
  public:
   WinFspServiceContext()
@@ -66,6 +119,7 @@ class WinFspServiceContext {
 
   ~WinFspServiceContext() {
     event_loop_.Do([&]() -> Task<> { co_await fs_context_->Quit(); });
+    fs_context_->StopBackgroundThread();
     event_loop_.ExitLoop();
     event_loop_thread_.get();
   }
@@ -108,8 +162,6 @@ class WinFspServiceContext {
     FileSystemContext(WinFspServiceContext* context)
         : event_loop_(&context->event_loop_),
           context_(&context->event_loop_),
-          background_thread_(
-              std::async(std::launch::async, [&] { RunBackgroundThread(); })),
           http_server_(
               context_.CreateHttpServer(CloudProviderAccountListener{this})) {}
 
@@ -118,35 +170,23 @@ class WinFspServiceContext {
     FileSystemContext& operator=(const FileSystemContext&) = delete;
     FileSystemContext& operator=(FileSystemContext&&) = delete;
 
-    ~FileSystemContext() {
-      {
-        std::unique_lock lock{mutex_};
-        quit_ = true;
-        condition_variable_.notify_one();
-      }
-      background_thread_.get();
-    }
-
     ThreadPool* thread_pool() { return context_.thread_pool(); }
     const EventLoop* event_loop() { return event_loop_; }
 
     void AddAccount(std::shared_ptr<CloudProviderAccount> account) {
-      std::unique_lock lock{mutex_};
-      tasks_.emplace_back([this, account = std::move(account)] {
-        std::unique_lock lock{mutex_};
+      executor_.Run([this, account = std::move(account)] {
+        std::unique_lock lock{contexts_mutex_};
         contexts_.emplace_back(
             account->provider(), event_loop(), thread_pool(), nullptr,
             ToWideString(
                 util::StrCat("\\", account->type(), "\\", account->username()))
                 .c_str());
       });
-      condition_variable_.notify_one();
     }
 
     void RemoveAccount(std::shared_ptr<CloudProviderAccount> account) {
-      std::unique_lock lock{mutex_};
-      tasks_.emplace_back([this, account = std::move(account)] {
-        std::unique_lock lock{mutex_};
+      executor_.Run([this, account = std::move(account)] {
+        std::unique_lock lock{contexts_mutex_};
         auto it = std::find_if(
             contexts_.begin(), contexts_.end(), [&](const auto& provider) {
               return provider.GetId() ==
@@ -156,42 +196,20 @@ class WinFspServiceContext {
           contexts_.erase(it);
         }
       });
-      condition_variable_.notify_one();
     }
 
     Task<> Quit() { return http_server_.Quit(); }
 
+    void StopBackgroundThread() { executor_.Stop(); }
+
    private:
     friend struct CloudProviderAccountListener;
 
-    void RunBackgroundThread() {
-      coro::util::SetThreadName("background-thread");
-
-      while (true) {
-        std::unique_lock lock{mutex_};
-        condition_variable_.wait(lock,
-                                 [&] { return quit_ || !tasks_.empty(); });
-        while (!tasks_.empty()) {
-          auto task = std::move(*tasks_.begin());
-          tasks_.pop_front();
-          lock.unlock();
-          std::move(task)();
-          lock.lock();
-        }
-        if (quit_) {
-          break;
-        }
-      }
-    }
-
     const EventLoop* event_loop_;
     CloudFactoryContext context_;
-    bool quit_ = false;
-    std::mutex mutex_;
-    std::condition_variable condition_variable_;
-    std::deque<stdx::any_invocable<void() &&>> tasks_;
+    SequentialExecutor executor_;
+    std::mutex contexts_mutex_;
     std::list<FileProvider> contexts_;
-    std::future<void> background_thread_;
     coro::http::HttpServer<AccountManagerHandler> http_server_;
   };
 
