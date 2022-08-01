@@ -87,10 +87,12 @@ LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           } else {
             data->event_loop->RunOnEventLoop([&] { data->quit.SetValue(); });
           }
-          PostQuitMessage(EXIT_SUCCESS);
+          DestroyWindow(hwnd);
         }
       }
     }
+  } else if (msg == WM_DESTROY) {
+    PostQuitMessage(EXIT_SUCCESS);
   }
   return DefWindowProc(hwnd, msg, wparam, lparam);
 }
@@ -189,6 +191,7 @@ int MainWithWinFSP(HINSTANCE instance) {
   auto delete_notify_icon_guard =
       AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
+  hwnd.release();
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
     TranslateMessage(&msg);
@@ -263,6 +266,7 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   auto delete_notify_icon_guard =
       AtScopeExit([&] { Shell_NotifyIcon(NIM_DELETE, &data); });
 
+  hwnd.release();
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
     TranslateMessage(&msg);
