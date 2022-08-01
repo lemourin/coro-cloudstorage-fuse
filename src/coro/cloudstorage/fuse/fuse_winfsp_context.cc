@@ -104,8 +104,11 @@ void ToFileInfo(const ItemContext& item, FSP_FSCTL_FILE_INFO* info) {
 
 }  // namespace
 
-FileSystemException::FileSystemException(HRESULT status)
-    : status_(status), message_(GetErrorString(status)) {}
+FileSystemException::FileSystemException(HRESULT status,
+                                         stdx::source_location location)
+    : Exception(std::move(location)),
+      status_(status),
+      message_(GetErrorString(status)) {}
 
 WinFspContext::WinFspContext(const coro::util::EventLoop* event_loop,
                              FileSystemProvider* context,

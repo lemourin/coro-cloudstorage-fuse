@@ -18,7 +18,9 @@ class FileSystemProvider;
 
 class FileSystemException : public Exception {
  public:
-  explicit FileSystemException(HRESULT status);
+  explicit FileSystemException(
+      HRESULT status,
+      stdx::source_location location = stdx::source_location::current());
 
   HRESULT status() const { return status_; }
   const char* what() const noexcept final { return message_.c_str(); }
