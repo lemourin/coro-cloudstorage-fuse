@@ -105,8 +105,9 @@ void ToFileInfo(const ItemContext& item, FSP_FSCTL_FILE_INFO* info) {
 }  // namespace
 
 FileSystemException::FileSystemException(HRESULT status,
-                                         stdx::source_location location)
-    : Exception(std::move(location)),
+                                         stdx::source_location location,
+                                         stdx::stacktrace stacktrace)
+    : Exception(std::move(location), std::move(stacktrace)),
       status_(status),
       message_(GetErrorString(status)) {}
 

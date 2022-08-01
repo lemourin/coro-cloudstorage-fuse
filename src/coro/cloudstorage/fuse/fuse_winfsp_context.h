@@ -20,7 +20,8 @@ class FileSystemException : public Exception {
  public:
   explicit FileSystemException(
       HRESULT status,
-      stdx::source_location location = stdx::source_location::current());
+      stdx::source_location location = stdx::source_location::current(),
+      stdx::stacktrace stacktrace = stdx::stacktrace::current());
 
   HRESULT status() const { return status_; }
   const char* what() const noexcept final { return message_.c_str(); }
