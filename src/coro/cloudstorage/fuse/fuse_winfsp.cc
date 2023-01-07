@@ -200,7 +200,10 @@ class WinFspServiceContext {
 
     Task<> Quit() { return http_server_.Quit(); }
 
-    void StopBackgroundThread() { executor_.Stop(); }
+    void StopBackgroundThread() {
+      executor_.Stop();
+      contexts_.clear();
+    }
 
    private:
     friend struct CloudProviderAccountListener;
