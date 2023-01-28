@@ -9,8 +9,6 @@ if("${IS_SYSTEM_DIR}" STREQUAL "-1")
     set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 endif()
 
-add_subdirectory(contrib/coro-cloudstorage EXCLUDE_FROM_ALL)
-
 if(WIN32)
     set(OPTIONS WIN32)
 endif()
@@ -31,7 +29,9 @@ target_sources(coro-cloudstorage-fuse PRIVATE
     src/coro/cloudstorage/fuse/filesystem_provider.cc
 )
 
-target_link_libraries(coro-cloudstorage-fuse PRIVATE coro-cloudstorage)
+find_package(coro-cloudstorage REQUIRED)
+
+target_link_libraries(coro-cloudstorage-fuse PRIVATE coro::coro-cloudstorage)
 target_include_directories(coro-cloudstorage-fuse PRIVATE src)
 
 if(WIN32)
@@ -83,8 +83,4 @@ endif()
 
 target_compile_definitions(coro-cloudstorage-fuse PRIVATE "_FILE_OFFSET_BITS=64")
 
-if(BUILD_SHARED_LIBS)
-    install(TARGETS coro-cloudstorage-fuse coro-cloudstorage coro-http)
-else()
-    install(TARGETS coro-cloudstorage-fuse)
-endif()
+install(TARGETS coro-cloudstorage-fuse)
