@@ -76,6 +76,7 @@ else()
         target_compile_definitions(coro-cloudstorage-fuse PRIVATE CORO_CLOUDSTORAGE_FUSE2)
     endif()
 
+    find_package(Libevent 2.1.12 REQUIRED)
     target_link_libraries(coro-cloudstorage-fuse PRIVATE PkgConfig::fuse libevent::core)
     target_compile_definitions(coro-cloudstorage-fuse PRIVATE FUSE_USE_VERSION=39)
 endif()
