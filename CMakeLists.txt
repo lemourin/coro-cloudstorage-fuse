@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 project(coro-cloudstorage-fuse)
 
-include(FindPkgConfig)
-
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" IS_SYSTEM_DIR)
 if("${IS_SYSTEM_DIR}" STREQUAL "-1")
@@ -66,6 +64,7 @@ else()
         src/coro/cloudstorage/fuse/fuse_posix.cc
         src/coro/cloudstorage/fuse/fuse_posix.h)
 
+    include(FindPkgConfig)
     pkg_check_modules(fuse IMPORTED_TARGET fuse3)
     if(NOT fuse_FOUND)
         pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse)
