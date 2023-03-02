@@ -17,6 +17,7 @@ constexpr UINT kIconMessageId = WM_APP + 1;
 
 using ::coro::Task;
 using ::coro::cloudstorage::fuse::FileSystemContext;
+using ::coro::cloudstorage::util::StrCat;
 
 #ifdef UNICODE
 using tstring = std::wstring;
@@ -58,6 +59,7 @@ struct WideDebugStream : std::wstreambuf {
 };
 
 struct WindowData {
+  FileSystemContext::Config config;
   FSP_SERVICE* service;
   FileSystemContext* context;
   const coro::util::EventLoop* event_loop;
@@ -67,9 +69,15 @@ struct WindowData {
 
 LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kIconMessageId) {
+    WindowData* data =
+        reinterpret_cast<WindowData*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     if (lparam == WM_LBUTTONDOWN) {
-      ShellExecute(nullptr, TEXT("open"), TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI),
-                   nullptr, nullptr, SW_SHOWNORMAL);
+      ShellExecute(
+          nullptr, TEXT("open"),
+          TEXT(std::string(
+                   data->config.cloud_factory_config.auth_data.redirect_uri())
+                   .c_str()),
+          nullptr, nullptr, SW_SHOWNORMAL);
     } else if (lparam == WM_RBUTTONDOWN) {
       if (POINT mouse_position; GetCursorPos(&mouse_position)) {
         HMENU menu = CreatePopupMenu();
@@ -80,8 +88,6 @@ LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                                    nullptr);
         PostMessage(hwnd, WM_NULL, 0, 0);
         if (index == 1) {
-          WindowData* data = reinterpret_cast<WindowData*>(
-              GetWindowLongPtr(hwnd, GWLP_USERDATA));
           if (data->service) {
             FspServiceStop(data->service);
           } else {
@@ -216,7 +222,7 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   auto service_thread = std::async(std::launch::async, [&] {
     coro::util::SetThreadName("event-loop");
     coro::util::EventLoop event_loop;
-    FileSystemContext context(&event_loop);
+    FileSystemContext context(&event_loop, window_data.config);
     window_data.context = &context;
     window_data.event_loop = &event_loop;
     coro::RunTask(CoRunWithNoWinFSP(&window_data, &context));
@@ -240,10 +246,13 @@ int MainWithNoWinFSP(HINSTANCE instance) {
   SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
                    reinterpret_cast<LONG_PTR>(&window_data));
 
-  NETRESOURCE netresource = {.dwType = RESOURCETYPE_DISK,
-                             .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
-                             .lpRemoteName = const_cast<LPTSTR>(
-                                 TEXT(CORO_CLOUDSTORAGE_REDIRECT_URI "/list"))};
+  std::string remote_name =
+      StrCat(window_data.config.cloud_factory_config.auth_data.redirect_uri(),
+             "/list");
+  NETRESOURCE netresource = {
+      .dwType = RESOURCETYPE_DISK,
+      .lpLocalName = const_cast<LPTSTR>(TEXT("W:")),
+      .lpRemoteName = const_cast<LPTSTR>(TEXT(remote_name.c_str()))};
   Check(WNetAddConnection3(hwnd.get(), &netresource, /*lpPassword=*/TEXT(""),
                            /*lpUserName=*/nullptr, /*dwFlags=*/0),
         TEXT("WNetAddConnection3"));

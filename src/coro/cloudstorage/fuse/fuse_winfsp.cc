@@ -27,6 +27,7 @@ using ::coro::cloudstorage::CloudException;
 using ::coro::cloudstorage::util::AbstractCloudProvider;
 using ::coro::cloudstorage::util::AccountManagerHandler;
 using ::coro::cloudstorage::util::AuthTokenManager;
+using ::coro::cloudstorage::util::CloudFactoryConfig;
 using ::coro::cloudstorage::util::CloudFactoryContext;
 using ::coro::cloudstorage::util::CloudProviderAccount;
 using ::coro::cloudstorage::util::SettingsManager;
@@ -101,7 +102,7 @@ class SequentialExecutor {
 
 class WinFspServiceContext {
  public:
-  WinFspServiceContext()
+  explicit WinFspServiceContext(CloudFactoryConfig config)
       : event_loop_thread_(std::async(std::launch::async, [&] {
           try {
             coro::util::SetThreadName("event-loop");
@@ -109,7 +110,7 @@ class WinFspServiceContext {
           } catch (...) {
           }
         })) {
-    event_loop_.Do([&] { fs_context_.emplace(this); });
+    event_loop_.Do([&] { fs_context_.emplace(this, std::move(config)); });
   }
 
   WinFspServiceContext(const WinFspServiceContext&) = delete;
@@ -159,9 +160,9 @@ class WinFspServiceContext {
 
   class FileSystemContext {
    public:
-    FileSystemContext(WinFspServiceContext* context)
+    FileSystemContext(WinFspServiceContext* context, CloudFactoryConfig config)
         : event_loop_(&context->event_loop_),
-          context_(&context->event_loop_),
+          context_(&context->event_loop_, std::move(config)),
           http_server_(
               context_.CreateHttpServer(CloudProviderAccountListener{this})) {}
 
@@ -242,7 +243,7 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
     if (argc > 2) {
       return STATUS_INVALID_PARAMETER;
     }
-    service->UserContext = new WinFspServiceContext;
+    service->UserContext = new WinFspServiceContext({});
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
     service->UserContext = nullptr;

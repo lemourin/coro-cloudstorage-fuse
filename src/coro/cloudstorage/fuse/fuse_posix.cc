@@ -16,6 +16,7 @@ namespace coro::cloudstorage::fuse {
 
 namespace {
 
+using ::coro::cloudstorage::fuse::FileSystemContext;
 using ::coro::util::AtScopeExit;
 
 constexpr std::array<int, 2> kHandledSignals = {SIGINT, SIGTERM};
@@ -46,7 +47,8 @@ void OnSignal(evutil_socket_t, short, void* d) {
   }
 }
 
-Task<int> CoRun(int argc, char** argv, const coro::util::EventLoop* event_loop,
+Task<int> CoRun(int argc, char** argv, const FileSystemContext::Config* config,
+                const coro::util::EventLoop* event_loop,
                 FileSystemContext* fs_context) {
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   auto fuse_args_guard = AtScopeExit([&] { fuse_opt_free_args(&args); });
@@ -60,9 +62,9 @@ Task<int> CoRun(int argc, char** argv, const coro::util::EventLoop* event_loop,
     free(options.mountpoint);  // NOLINT
   });
   if (options.show_help) {
-    std::cerr << "Please visit " CORO_CLOUDSTORAGE_REDIRECT_URI
-                 " to add accounts while the program is running."
-              << std::endl
+    std::cerr << "Please visit "
+              << config->cloud_factory_config.auth_data.redirect_uri()
+              << " to add accounts while the program is running." << std::endl
               << std::endl;
     std::cerr << "Options for libfuse:" << std::endl;
     fuse_cmdline_help();
@@ -120,10 +122,11 @@ Task<int> CoRun(int argc, char** argv, const coro::util::EventLoop* event_loop,
 
 int Run(int argc, char** argv) {
   coro::util::EventLoop event_loop;
-  FileSystemContext fs_context(&event_loop);
+  FileSystemContext::Config config;
+  FileSystemContext fs_context(&event_loop, config);
   int status = 0;
   coro::RunTask([&]() -> Task<> {
-    status = co_await CoRun(argc, argv, &event_loop, &fs_context);
+    status = co_await CoRun(argc, argv, &config, &event_loop, &fs_context);
   });
   event_loop.EnterLoop();
   return status;

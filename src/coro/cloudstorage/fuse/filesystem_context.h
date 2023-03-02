@@ -16,14 +16,12 @@ namespace coro::cloudstorage::fuse {
 class FileSystemContext {
  public:
   struct Config {
-    int timeout_ms;
-    std::optional<std::string> config_path;
+    int timeout_ms = 10000;
     FileSystemProviderConfig fs_config;
-    http::CacheHttpConfig cache_http_config;
+    util::CloudFactoryConfig cloud_factory_config;
   };
 
-  explicit FileSystemContext(const coro::util::EventLoop* event_loop,
-                             Config = {.timeout_ms = 10000});
+  FileSystemContext(const coro::util::EventLoop* event_loop, Config);
 
   const auto& fs() const { return fs_; }
   auto& fs() { return fs_; }
