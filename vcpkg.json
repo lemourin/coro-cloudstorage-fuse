@@ -2,6 +2,10 @@
   "name": "coro-cloudstorage-fuse",
   "version-string": "0.1.0",
   "dependencies": [
-    "coro-cloudstorage"
+    "coro-cloudstorage",
+    {
+      "name": "coro-http",
+      "features": ["stacktrace"]
+    }
   ]
 }
