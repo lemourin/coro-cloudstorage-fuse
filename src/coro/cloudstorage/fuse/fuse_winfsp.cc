@@ -26,7 +26,6 @@ using ::coro::Task;
 using ::coro::cloudstorage::CloudException;
 using ::coro::cloudstorage::util::AbstractCloudProvider;
 using ::coro::cloudstorage::util::AccountManagerHandler;
-using ::coro::cloudstorage::util::AuthTokenManager;
 using ::coro::cloudstorage::util::CloudFactoryConfig;
 using ::coro::cloudstorage::util::CloudFactoryContext;
 using ::coro::cloudstorage::util::CloudProviderAccount;
@@ -131,8 +130,8 @@ class WinFspServiceContext {
   using HttpT = http::CacheHttp;
 
   struct CloudProviderAccountListener {
-    void OnCreate(std::shared_ptr<CloudProviderAccount> account);
-    void OnDestroy(std::shared_ptr<CloudProviderAccount> account);
+    void OnCreate(CloudProviderAccount account);
+    void OnDestroy(CloudProviderAccount account);
 
     FileSystemContext* context;
   };
