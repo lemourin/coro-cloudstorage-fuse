@@ -174,24 +174,24 @@ class WinFspServiceContext {
     ThreadPool* thread_pool() { return context_.thread_pool(); }
     const EventLoop* event_loop() { return event_loop_; }
 
-    void AddAccount(std::shared_ptr<CloudProviderAccount> account) {
+    void AddAccount(CloudProviderAccount account) {
       executor_.Run([this, account = std::move(account)] {
         std::unique_lock lock{contexts_mutex_};
         contexts_.emplace_back(
-            account->provider(), event_loop(), thread_pool(), nullptr,
+            account.provider(), event_loop(), thread_pool(), nullptr,
             ToWideString(
-                util::StrCat("\\", account->type(), "\\", account->username()))
+                util::StrCat("\\", account.type(), "\\", account.username()))
                 .c_str());
       });
     }
 
-    void RemoveAccount(std::shared_ptr<CloudProviderAccount> account) {
+    void RemoveAccount(CloudProviderAccount account) {
       executor_.Run([this, account = std::move(account)] {
         std::unique_lock lock{contexts_mutex_};
         auto it = std::find_if(
             contexts_.begin(), contexts_.end(), [&](const auto& provider) {
               return provider.GetId() ==
-                     reinterpret_cast<intptr_t>(account->provider().get());
+                     reinterpret_cast<intptr_t>(account.provider().get());
             });
         if (it != contexts_.end()) {
           contexts_.erase(it);
@@ -223,15 +223,15 @@ class WinFspServiceContext {
 };
 
 void WinFspServiceContext::CloudProviderAccountListener::OnCreate(
-    std::shared_ptr<CloudProviderAccount> account) {
-  std::cerr << "CREATE [" << account->type() << "] " << account->username()
+    CloudProviderAccount account) {
+  std::cerr << "CREATE [" << account.type() << "] " << account.username()
             << '\n';
   context->AddAccount(std::move(account));
 }
 
 void WinFspServiceContext::CloudProviderAccountListener::OnDestroy(
-    std::shared_ptr<CloudProviderAccount> account) {
-  std::cerr << "DESTROY [" << account->type() << "] " << account->username()
+    CloudProviderAccount account) {
+  std::cerr << "DESTROY [" << account.type() << "] " << account.username()
             << '\n';
   context->RemoveAccount(std::move(account));
 }
