@@ -50,13 +50,16 @@ class WinFspServiceContext {
  public:
   explicit WinFspServiceContext(CloudFactoryConfig config)
       : event_loop_thread_(std::async(std::launch::async, [&] {
-          try {
-            coro::util::SetThreadName("event-loop");
-            event_loop_.EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
-          } catch (...) {
-          }
+          coro::util::SetThreadName("event-loop");
+          event_loop_.EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
         })) {
-    event_loop_.Do([&] { fs_context_.emplace(this, std::move(config)); });
+    try {
+      event_loop_.Do([&] { fs_context_.emplace(this, std::move(config)); });
+    } catch (...) {
+      event_loop_.ExitLoop();
+      event_loop_thread_.get();
+      throw;
+    }
   }
 
   WinFspServiceContext(const WinFspServiceContext&) = delete;
