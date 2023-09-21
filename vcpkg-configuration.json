@@ -2,13 +2,13 @@
   "default-registry": {
     "kind": "git",
     "repository": "https://github.com/microsoft/vcpkg",
-    "baseline": "80ecf32496c3806c5bb79bb80f029f83d058930e"
+    "baseline": "4cfabe769eaceb209ea37267e8c50c43b86a4a7b"
   },
   "registries": [
     {
       "kind": "git",
       "repository": "https://github.com/lemourin/vcpkg-registry",
-      "baseline": "3e804d46cb762dd8e1d44fce311a3e90ceea5608",
+      "baseline": "f0d1ea1eadb01f96ee3d2379656b88a4fb1ed8e3",
       "packages": [ "coro-cloudstorage", "coro-http", "duktape" ]
     }
   ]
