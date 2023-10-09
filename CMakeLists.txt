@@ -41,10 +41,14 @@ if(WIN32)
         src/coro/cloudstorage/fuse/fuse_winfsp.h
         src/coro/cloudstorage/fuse/fuse_winfsp.cc)
 
-    if("${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
+    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "ARM64")
+        set(ARCH a64)
+    elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "AMD64")
+        set(ARCH x64)
+    elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "X86")
         set(ARCH x86)
     else()
-        set(ARCH x64)
+        message(FATAL_ERROR "${CMAKE_SYSTEM_PROCESSOR} unsupported.")
     endif()
 
     find_library(winfsp_LIBRARY NAMES winfsp-${ARCH} PATHS $ENV{PROGRAMFILES\(x86\)}/WinFsp/lib REQUIRED)
