@@ -69,14 +69,15 @@ else()
         src/coro/cloudstorage/fuse/fuse_posix.h)
 
     include(FindPkgConfig)
-    pkg_check_modules(fuse IMPORTED_TARGET fuse3)
-    if(NOT fuse_FOUND)
-        pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse)
+    if(APPLE)
+        pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse-t)
         target_sources(coro-cloudstorage-fuse PRIVATE
             src/coro/cloudstorage/fuse/fuse_posix_compat.h
             src/coro/cloudstorage/fuse/fuse_posix_compat.cc
         )
         target_compile_definitions(coro-cloudstorage-fuse PRIVATE CORO_CLOUDSTORAGE_FUSE2)
+    else()
+        pkg_check_modules(fuse REQUIRED IMPORTED_TARGET fuse3)
     endif()
 
     find_package(Libevent 2.1.12 REQUIRED)

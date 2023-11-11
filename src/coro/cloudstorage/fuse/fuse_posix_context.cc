@@ -160,6 +160,7 @@ FusePosixContext::FusePosixContext(const coro::util::EventLoop* event_loop,
           chan_.reset(chan);
           if (size < 0) {
             std::cerr << "FUSE ERROR: " << util::ErrorToString(-size) << "\n";
+            fuse_session_exit(session_.get());
           } else {
             event_loop->Do([&] {
               fuse_session_process_buf(session_.get(), &buffer, chan_.get());
