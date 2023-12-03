@@ -150,7 +150,7 @@ class WinFspServiceContext {
     const EventLoop* event_loop_;
     CloudFactoryContext context_;
     std::list<FileProvider> contexts_;
-    coro::http::HttpServer<AccountManagerHandler> http_server_;
+    coro::cloudstorage::util::CloudFactoryServer http_server_;
   };
 
   EventLoop event_loop_;

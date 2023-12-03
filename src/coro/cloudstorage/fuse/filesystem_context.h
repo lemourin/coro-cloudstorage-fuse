@@ -26,7 +26,7 @@ class FileSystemContext {
   const auto& fs() const { return fs_; }
   auto& fs() { return fs_; }
 
-  http::HttpServer<util::AccountManagerHandler> CreateHttpServer();
+  coro::cloudstorage::util::CloudFactoryServer CreateHttpServer();
 
  private:
   util::CloudFactoryContext context_;

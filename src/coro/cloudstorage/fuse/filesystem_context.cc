@@ -33,7 +33,7 @@ FileSystemContext::FileSystemContext(const coro::util::EventLoop* event_loop,
       timing_out_provider_(event_loop, config.timeout_ms, &provider_),
       fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config) {}
 
-http::HttpServer<util::AccountManagerHandler>
+coro::cloudstorage::util::CloudFactoryServer
 FileSystemContext::CreateHttpServer() {
   return context_.CreateHttpServer(
       ForwardToMergedCloudProvider{&merged_provider_});
