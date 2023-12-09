@@ -8,7 +8,7 @@
     {
       "kind": "git",
       "repository": "https://github.com/lemourin/vcpkg-registry",
-      "baseline": "bf88b6e8d53f8d87bb5b150c0d24b1332dcafe66",
+      "baseline": "91a5113ff1c2379694301bb33c16d5fca71e7f4b",
       "packages": [ "coro-cloudstorage", "coro-http", "curl", "ngtcp2", "quictls" ]
     }
   ]
