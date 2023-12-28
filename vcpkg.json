@@ -5,7 +5,9 @@
     "coro-cloudstorage",
     {
       "name": "coro-http",
-      "features": ["stacktrace"]
+      "features": [
+        "stacktrace"
+      ]
     }
   ]
 }
