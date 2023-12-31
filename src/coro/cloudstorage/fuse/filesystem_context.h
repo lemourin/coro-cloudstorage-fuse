@@ -21,7 +21,7 @@ class FileSystemContext {
     util::CloudFactoryConfig cloud_factory_config;
   };
 
-  FileSystemContext(const coro::util::EventLoop* event_loop, Config);
+  explicit FileSystemContext(Config);
 
   const auto& fs() const { return fs_; }
   auto& fs() { return fs_; }

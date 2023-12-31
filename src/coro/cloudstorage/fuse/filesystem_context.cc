@@ -26,11 +26,11 @@ struct ForwardToMergedCloudProvider {
 
 }  // namespace
 
-FileSystemContext::FileSystemContext(const coro::util::EventLoop* event_loop,
-                                     Config config)
-    : context_(event_loop, std::move(config.cloud_factory_config)),
+FileSystemContext::FileSystemContext(Config config)
+    : context_(std::move(config.cloud_factory_config)),
       provider_(CreateAbstractCloudProviderImpl(&merged_provider_)),
-      timing_out_provider_(event_loop, config.timeout_ms, &provider_),
+      timing_out_provider_(config.cloud_factory_config.event_loop,
+                           config.timeout_ms, &provider_),
       fs_(&timing_out_provider_, context_.thread_pool(), config.fs_config) {}
 
 coro::cloudstorage::util::CloudFactoryServer

@@ -7,7 +7,7 @@
   "registries": [
     {
       "kind": "git",
-      "baseline": "69ef66f271e8063aabe4488c2d6f288838782c7c",
+      "baseline": "9d4f836cf951a5f738ee235bd80354e238a4257c",
       "repository": "https://github.com/lemourin/vcpkg-registry",
       "packages": [
         "coro-cloudstorage",
