@@ -48,13 +48,16 @@ std::wstring ToWideString(std::string_view input) {
 
 class WinFspServiceContext {
  public:
-  explicit WinFspServiceContext(CloudFactoryConfig config)
+  WinFspServiceContext()
       : event_loop_thread_(std::async(std::launch::async, [&] {
           coro::util::SetThreadName("event-loop");
           event_loop_.EnterLoop(coro::util::EventLoopType::NoExitOnEmpty);
         })) {
     try {
-      event_loop_.Do([&] { fs_context_.emplace(this, std::move(config)); });
+      event_loop_.Do([&] {
+        fs_context_.emplace(this,
+                            CloudFactoryConfig{.event_loop = &event_loop_});
+      });
     } catch (...) {
       event_loop_.ExitLoop();
       event_loop_thread_.get();
@@ -111,7 +114,7 @@ class WinFspServiceContext {
    public:
     FileSystemContext(WinFspServiceContext* context, CloudFactoryConfig config)
         : event_loop_(&context->event_loop_),
-          context_(&context->event_loop_, std::move(config)),
+          context_(std::move(config)),
           http_server_(
               context_.CreateHttpServer(CloudProviderAccountListener{this})) {}
 
@@ -179,7 +182,7 @@ NTSTATUS SvcStart(FSP_SERVICE* service, ULONG argc, PWSTR* argv) {
     if (argc > 2) {
       return STATUS_INVALID_PARAMETER;
     }
-    service->UserContext = new WinFspServiceContext({});
+    service->UserContext = new WinFspServiceContext();
     return STATUS_SUCCESS;
   } catch (const FileSystemException& e) {
     service->UserContext = nullptr;

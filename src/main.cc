@@ -59,10 +59,14 @@ struct WideDebugStream : std::wstreambuf {
 };
 
 struct WindowData {
+  explicit WindowData(FSP_SERVICE* service)
+      : config({.cloud_factory_config = {.event_loop = &event_loop}}),
+        service(service) {}
+
+  coro::util::EventLoop event_loop;
   FileSystemContext::Config config;
-  FSP_SERVICE* service;
-  FileSystemContext* context;
-  const coro::util::EventLoop* event_loop;
+  FSP_SERVICE* service = nullptr;
+  FileSystemContext* context = nullptr;
   coro::Promise<void> quit;
   std::promise<NTSTATUS> initialized;
 };
@@ -91,7 +95,7 @@ LRESULT WINAPI WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           if (data->service) {
             FspServiceStop(data->service);
           } else {
-            data->event_loop->RunOnEventLoop([&] { data->quit.SetValue(); });
+            data->event_loop.RunOnEventLoop([&] { data->quit.SetValue(); });
           }
           DestroyWindow(hwnd);
         }
@@ -169,7 +173,7 @@ int MainWithWinFSP(HINSTANCE instance) {
       0, kAppId, kAppId, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
       CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, nullptr));
   CheckNotNull(hwnd, TEXT("CreateWindowEx"));
-  WindowData window_data{.service = service.get()};
+  WindowData window_data{service.get()};
   SetWindowLongPtr(hwnd.get(), GWLP_USERDATA,
                    reinterpret_cast<LONG_PTR>(&window_data));
   service->UserContext = &window_data;
@@ -218,23 +222,20 @@ Task<> CoRunWithNoWinFSP(WindowData* data, FileSystemContext* context) {
 }
 
 int MainWithNoWinFSP(HINSTANCE instance) {
-  WindowData window_data{};
+  WindowData window_data{nullptr};
   auto service_thread = std::async(std::launch::async, [&] {
     coro::util::SetThreadName("event-loop");
-    coro::util::EventLoop event_loop;
-    FileSystemContext context(&event_loop, window_data.config);
+    FileSystemContext context(std::move(window_data.config));
     window_data.context = &context;
-    window_data.event_loop = &event_loop;
     coro::RunTask(CoRunWithNoWinFSP(&window_data, &context));
-    event_loop.EnterLoop(coro::util::EventLoopType::ExitOnEmpty);
+    window_data.event_loop.EnterLoop(coro::util::EventLoopType::ExitOnEmpty);
     window_data.context = nullptr;
-    window_data.event_loop = nullptr;
     return STATUS_SUCCESS;
   });
   window_data.initialized.get_future().get();
   auto quit_service = AtScopeExit([&] {
-    if (window_data.event_loop) {
-      window_data.event_loop->RunOnEventLoop(
+    if (window_data.context) {
+      window_data.event_loop.RunOnEventLoop(
           [&] { window_data.quit.SetValue(); });
     }
   });
