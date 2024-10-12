@@ -1,21 +1,17 @@
 {
   "default-registry": {
     "kind": "git",
-    "baseline": "943c5ef1c8f6b5e6ced092b242c8299caae2ff01",
+    "baseline": "c82f74667287d3dc386bce81e44964370c91a289",
     "repository": "https://github.com/microsoft/vcpkg"
   },
   "registries": [
     {
       "kind": "git",
-      "baseline": "587dadbaf91042e124448855dca231b991de9f53",
+      "baseline": "c56e0254de749df30262395bafaa61c951442970",
       "repository": "https://github.com/lemourin/vcpkg-registry",
       "packages": [
         "coro-cloudstorage",
-        "coro-http",
-        "curl",
-        "libevent",
-        "ngtcp2",
-        "quictls"
+        "coro-http"
       ]
     }
   ]
