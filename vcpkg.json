@@ -9,5 +9,11 @@
         "stacktrace"
       ]
     }
+  ],
+  "overrides": [
+    {
+      "name": "curl",
+      "version": "8.7.1"
+    }
   ]
 }
